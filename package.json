@@ -2,7 +2,7 @@
   "name": "interbox-docs",
   "private": true,
   "scripts": {
-    "postinstall": "install-hooks",
+    "postinstall": "bun scripts/patch-docs-tools.ts && install-hooks",
     "lint": "docs-lint",
     "lint:check": "docs-lint --check",
     "lint:json": "docs-lint --json",
