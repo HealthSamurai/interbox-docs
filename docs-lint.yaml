@@ -1,0 +1,7 @@
+docs_dir: docs
+assets_dir: assets
+summary: SUMMARY.md
+
+checks:
+  warn_only:
+    - title-mismatch

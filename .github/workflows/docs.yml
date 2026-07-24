@@ -1,0 +1,11 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  docs:
+    uses: HealthSamurai/docs-tools/.github/workflows/docs.yml@main

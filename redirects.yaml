@@ -1,0 +1,5 @@
+# URL redirects
+# Format: old_path: new_path  (keys = old slugs without leading / or .md; values = .md paths under docs/)
+# Add entries here when a page is renamed or moved so old URLs keep working.
+
+redirects: {}
