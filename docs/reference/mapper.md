@@ -103,6 +103,15 @@ interface MapperDefinition<
 // the engine-owned ConceptMap store; the workspace never touches the DB directly.
 interface MapperContext {
   translate(conceptMapId: string, code: string): Promise<MappedCode | undefined>;
+  readonly source: MapperSource;
+}
+
+// The inbound message being mapped.
+interface MapperSource {
+  readonly format: string;     // parser/format it arrived as, e.g. "hl7v2"
+  readonly id: string;         // inbound row id, stringified (it is a bigserial)
+  readonly pipeline: string;
+  readonly receivedAt: string; // ingest time, ISO-8601
 }
 
 // A resolved terminology mapping (ConceptMap target).
@@ -124,3 +133,69 @@ type ParserType = keyof ParserOutputMap;
 mapper attached to it receives as `input` — it's why `.mapper()` can
 type-check `input` against the exact parser the mapper declared, and why
 [Pipelines](../concepts/pipelines.md)'s `SP` tracking works.
+
+`ctx.source` identifies the message currently being mapped. The engine records the
+same facts on every queue row this message produces, and exposes them here so you
+can build output that refers to the message — most often a FHIR `Provenance`, via
+[`provenanceFor`](#provenancefor--a-fhir-provenance-for-what-a-mapper-produced).
+
+Prefer `ctx.source.receivedAt` over `new Date()` for anything you embed in a
+resource. It is the inbound row's ingest time, so it does not move between runs:
+re-mapping a message (a Retry) then reproduces byte-identical resources, and the
+sender's content hash lets them skip instead of rewriting the destination.
+
+## `provenanceFor` — a FHIR Provenance for what a mapper produced
+
+```ts
+function provenanceFor(
+  ctx: Pick<MapperContext, "source">,
+  resources: readonly Resource[],
+  overrides?: Partial<Provenance>,
+): Provenance | undefined;
+```
+
+Interbox records which inbound message produced every resource, but keeps it in the
+queue row's own `source` column — nothing interbox-shaped is written into your
+resources or sent to your FHIR server. If you want the destination to *hold*
+provenance, emit it as a resource from your mapper:
+
+```ts
+map(cfg, msg, ctx) {
+  const out = [patient, encounter, observation];
+  return [...out, provenanceFor(ctx, out)];
+}
+```
+
+```json
+{
+  "resourceType": "Provenance",
+  "id": "ib-hl7v2-42",
+  "recorded": "2026-07-29T10:00:00.000Z",
+  "agent": [{ "who": { "display": "Interbox" } }],
+  "target": [
+    { "reference": "Patient/p1" },
+    { "reference": "Encounter/e1" },
+    { "reference": "Observation/o1" }
+  ]
+}
+```
+
+No engine machinery stands behind this — it is a plain function, and what it
+returns is enqueued like any other mapped resource. Because `target` holds
+ordinary FHIR references, the sender's closure walk already treats the targets as
+this resource's dependencies and ships them in the same bundle.
+
+- **The id is derived from the message** (`ib-<format>-<id>`), so re-mapping
+  overwrites the message's own record instead of accumulating duplicates.
+- **`recorded` comes from `ctx.source.receivedAt`**, not the clock, so a Retry
+  reproduces the resource byte-for-byte rather than churning the destination.
+- **Resources without an `id` are skipped**, and if that leaves no targets the
+  function returns `undefined` — FHIR requires at least one, and an untargeted
+  Provenance is rejected as bad data, failing the whole message.
+- **`overrides` is shallow-merged last**, so a real `agent` or `activity` costs one
+  field while `target` and `id` stay derived.
+
+If you supply your own `agent`, keep `who` as a `display` unless the resource it
+references actually exists at the destination: a `who: { reference: … }` is
+collected as a dependency of the Provenance, and an unresolvable one blocks the
+bundle from ever being sent.

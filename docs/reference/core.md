@@ -19,7 +19,7 @@ What's in it, by category:
 | category | types | who cares |
 |---|---|---|
 | authoring values | `Str`, `Num`, `Resolved` | you, occasionally — see [Env & Config](../concepts/env-and-config.md) |
-| mapper contracts | `MapperDefinition`, `MapperContext`, `MappedCode`, `ParserOutputMap`, `ParserType` | you, via [`defineMapper`](mapper.md) — usually inferred, import only to annotate helpers |
+| mapper contracts | `MapperDefinition`, `MapperContext`, `MapperSource`, `MappedCode`, `ParserOutputMap`, `ParserType` | you, via [`defineMapper`](mapper.md) — usually inferred, import only to annotate helpers |
 | error taxonomy | `domainError`, `ERROR_GROUPS`, `ErrorGroup` | you — re-exported from the root, see [Errors](../concepts/errors.md) |
 | stage runtime contracts | `SourceDefinition`/`SenderDefinition`/`ParserDefinition` + their `*Config`/`*Entry`/`*Factory`/`*Instance` siblings, `Runner` | the engine — a workspace never implements these |
 

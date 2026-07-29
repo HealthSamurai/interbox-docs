@@ -98,5 +98,7 @@ const MapperRegistry: {
 };
 ```
 
-plus the re-exported types `ConfiguredMapper`, `MappedCode`, `MapperContext`,
-`MapperDefinition`, `MapperDescriptor`, `ParserOutputMap`, `ParserType`.
+plus [`provenanceFor`](mapper.md#provenancefor--a-fhir-provenance-for-what-a-mapper-produced)
+and the re-exported types `ConfiguredMapper`, `MappedCode`, `MapperContext`,
+`MapperDefinition`, `MapperDescriptor`, `MapperSource`, `ParserOutputMap`,
+`ParserType`.

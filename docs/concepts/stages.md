@@ -44,6 +44,11 @@ defineMapper({
 });
 ```
 
+Everything a mapper returns is enqueued together and recorded against the message
+it came from, which `ctx.source` also exposes — so a mapper can emit a resource
+that refers to the message, such as a FHIR `Provenance` covering the rest of its
+output ([`provenanceFor`](../reference/mapper.md#provenancefor--a-fhir-provenance-for-what-a-mapper-produced)).
+
 See [Mapper authoring](../reference/mapper.md) for the full `defineMapper`/
 `MapperRegistry` reference, and [Errors](errors.md) for how a mapper reports
 a failure the engine can classify.
@@ -59,6 +64,19 @@ sender's config:
   5xx) to retry before the batch is recorded as errored. Permanent rejections
   (e.g. Aidbox validation errors) don't retry — they land in the error queue
   as `aidbox_rejected` for triage.
+
+### What the destination receives
+
+Exactly the resources your mapper returned. Interbox tracks which inbound message
+produced each one, but that record lives in the queue row's own `source` column —
+it is never written into the resource and never reaches your FHIR server. For
+provenance the destination should hold, emit a
+[`Provenance`](../reference/mapper.md#provenancefor--a-fhir-provenance-for-what-a-mapper-produced)
+from the mapper.
+
+A batch is also claimed a message at a time: the row cap falls only on a message
+boundary, so the last message pulls the rest of its rows in with it rather than
+being cut in half, and a single message larger than the cap still arrives whole.
 
 ## Why the split
 

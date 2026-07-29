@@ -48,9 +48,9 @@ endpoint never holds up ingestion or delivery.
 ## Scope — per pipeline
 
 A `.webhook()` fires only for **its own pipeline's** events, including `sent`:
-the originating pipeline is stamped on each resource's provenance and read back
-at send time, so a shared `aidboxSender` attributes each delivery to the pipeline
-that produced it.
+each queue row records the pipeline that produced it in its `source` column, and
+the sender reads it back at send time, so a shared `aidboxSender` attributes each
+delivery to the pipeline that produced it.
 
 > **Note:** an engine currently flattens all declared pipelines into one runtime
 > (shared inbound tables + queue). Per-pipeline webhook scoping is reliable with a
