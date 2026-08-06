@@ -13,10 +13,10 @@ import type {
 } from "@health-samurai/interbox/hl7v2";
 ```
 
-This subpath is **generated** (from the HL7v2 message types the workspace's
-pipelines target) plus one hand-written parser module — it's a large surface
-by symbol count, so this page is a map of what's here rather than a field-by-
-field dump. Your editor's autocomplete over the generated types is the
+This subpath is **generated** (from the HL7v2 message types listed in
+`scripts/regen-hl7v2.ts`) plus one hand-written parser module — it's a large
+surface by symbol count, so this page is a map of what's here rather than a
+field-by-field dump. Your editor's autocomplete over the generated types is the
 day-to-day reference.
 
 ## What's exported
@@ -32,8 +32,24 @@ day-to-day reference.
 - **`tables`** — generated HL7v2 coded-value tables (HL7 table 0001, 0004,
   …), importable as typed constants.
 - **`messages`** — generated per-message-type builders/shapes (`BAR_P01`,
-  `ORM_O01`, `ORU_R01`, `VXU_V04` as of this writing — regenerate to add
-  more).
+  `ORM_O01`, `ORU_R01`, `VXU_V04`, `SIU_S12` as of this writing).
+
+## Adding a message type
+
+The generated surface covers the segments, datatypes and tables reachable from
+the message types it was generated for — nothing else. A segment outside that
+set has no accessor at all, so supporting a new message means regenerating
+rather than hand-writing one: add it to `MESSAGE_TYPES` in
+`scripts/regen-hl7v2.ts` and run
+
+```sh
+bun scripts/regen-hl7v2.ts
+```
+
+which rewrites all four generated files in place. The script pins the codegen
+version and explains the two post-processing steps it applies; the pin is
+deliberately independent of this package's own `@atomic-ehr/hl7v2` dependency,
+so regenerating types never changes how messages are parsed at runtime.
 - **`parse`** — `parseHl7v2(message: string): HL7v2Message` (throws on
   malformed input) and the re-exported `findSegment` helper. This is the
   parser `hl7v2Parser` binds to (see [/builtins](builtins.md)); it's the
