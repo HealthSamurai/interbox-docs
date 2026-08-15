@@ -63,3 +63,7 @@ from how the engine works, so they are documented here rather than in the chart:
   migrates the database as it comes up. The engine also self-creates its
   `interbox` database when the `DATABASE_URL` user has `CREATEDB` (otherwise
   pre-create it — see PREREQUISITES).
+
+How the pod gets that workspace — which branch it tracks, how pipeline changes
+reach a running engine, and what the dashboard is allowed to change — is
+[The Workspace](workspace.md).

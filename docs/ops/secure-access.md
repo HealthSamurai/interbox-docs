@@ -12,6 +12,11 @@ real deployment it must be:
 All three are configured with **Helm values + separately-installed cluster
 components** — no changes to the Interbox chart itself.
 
+> Because there is no login, anyone who gets past the gate above has whatever the
+> dashboard is configured to allow — including editing the workspace, if you have
+> turned that on. That is `INTERBOX_WORKSPACE_ACCESS`, and it defaults to
+> read-only; see [The Workspace](workspace.md).
+
 ## The pieces
 
 - **Ingress controller** (e.g. `ingress-nginx`, or a cloud one like AGIC) — the

@@ -26,6 +26,7 @@
 
 * [System Requirements](ops/sizing.md)
 * [Deployment](ops/deploy.md)
+* [The Workspace](ops/workspace.md)
 * [Securing Dashboard Access](ops/secure-access.md)
 * [Testing Locally with k3d](ops/local-testing.md)
 * [Updating the Engine](ops/updating.md)

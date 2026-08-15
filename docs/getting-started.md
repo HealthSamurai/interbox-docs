@@ -9,15 +9,20 @@ deploy:
 ```sh
 git clone https://github.com/HealthSamurai/interbox-workspace.git
 cd interbox-workspace
+cp .env.example .env
 docker compose up
 ```
 
-No `.env` to copy first — every setting `docker-compose.yaml` reads has a
-built-in default (`AIDBOX_CLIENT_SECRET`, `INTERBOX_VERSION`, …), and the image is
-**licensed** but there's no manual key to paste in either: the dashboard's
-first-run portal OAuth flow signs both the Interbox and Aidbox licenses for
-you — the pipeline just stays paused (with an activation screen) until you
-click through it once.
+The stack boots without a `.env` — every setting `docker-compose.yaml` reads has
+a built-in default (`AIDBOX_CLIENT_SECRET`, `INTERBOX_VERSION`, …) — but copy it
+anyway: that file is where the template's recommended local settings live,
+including `INTERBOX_WORKSPACE_ACCESS=apply`, which is what lets you edit
+pipelines from the dashboard (see [The Workspace](ops/workspace.md)). Without it
+the Repository tab is read-only.
+
+There is no license key to paste either way: the dashboard's first-run portal
+OAuth flow signs both the Interbox and Aidbox licenses for you — the pipeline
+just stays paused (with an activation screen) until you click through it once.
 
 Open `http://localhost:3001` for the dashboard, then send HL7v2 over MLLP to
 `localhost:2575` and watch messages flow through to the FHIR server.
@@ -29,9 +34,8 @@ goes through the exact same parse → mapper → sender path as a real MLLP
 write, so it's a fine way to poke the pipeline before wiring up a real
 sender.
 
-Copy `.env.example` to `.env` only if you want to override a default —
-pinning `INTERBOX_VERSION`, setting a real `AIDBOX_CLIENT_SECRET`, or pointing at a
-private registry.
+`.env` is also where you override the rest — pinning `INTERBOX_VERSION`, setting
+a real `AIDBOX_CLIENT_SECRET`, or pointing at a private registry.
 
 ```sh
 # postinstall runs `interbox sync` automatically, mirroring this package's
@@ -105,4 +109,20 @@ hot-reload loop). A pipeline change reloads into its **own runtime**, not by
 restarting `interbox` itself: in local dev the engine polls the workspace
 (`INTERBOX_WORKSPACE_POLL_MS`, 2s in the template's `docker-compose.yaml`)
 and swaps workers in place; elsewhere, trigger the same reload from the
-dashboard ("Pull now").
+dashboard ("Sync now").
+
+The URL scheme only picks a default. What differs between the two is the
+**lifecycle**, set by `INTERBOX_WORKSPACE_MODE`: `clone` means the engine owns a
+copy it may fetch, check out and reset, while `worktree` means it bundles the
+directory as it stands and never checks anything out or resets anything —
+because that directory belongs to you, not to the engine. Since
+`file:///path/to/repo` is a git remote like any other,
+`INTERBOX_WORKSPACE_MODE=clone` runs a local repository exactly as a deployment
+runs a remote one.
+
+What the dashboard may **do** to a workspace is a separate question, set by
+`INTERBOX_WORKSPACE_ACCESS`. Both modes can be edited from the browser; where
+the edit goes differs — a clone takes commits pushed to a branch, a worktree
+takes saves to disk. See [The Workspace](ops/workspace.md) for both settings,
+how updates reach a running engine, and what happens when two people edit the
+same file.
