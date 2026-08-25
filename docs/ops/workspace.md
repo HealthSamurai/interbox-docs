@@ -20,12 +20,156 @@ people looking at it.
 ```sh
 INTERBOX_WORKSPACE_GIT_URL=git@github.com:acme/interbox-workspace.git
 INTERBOX_WORKSPACE_GIT_REF=main          # branch to run (default: main)
-INTERBOX_WORKSPACE_GIT_KEY=              # token for a private https clone
+INTERBOX_WORKSPACE_GIT_KEY=              # the credential for a private workspace
 INTERBOX_WORKSPACE_POLL_MS=30000         # how often to look for changes; 0 disables
 ```
 
-`INTERBOX_WORKSPACE_GIT_KEY` is spliced into the clone URL, so use it only with
-`https://` remotes. For SSH remotes, mount a key and let git use it as usual.
+## The credential
+
+A private workspace needs one credential, and `INTERBOX_WORKSPACE_GIT_KEY` is
+it — for both transports. An `https://` remote wants a token, which Interbox
+splices into the clone URL. A `git@…` or `ssh://…` remote wants an SSH private
+key, as PEM or base64-encoded PEM. A public repository over `https://`, or a
+local path, needs nothing at all.
+
+A public repository over **SSH** still needs a key, which surprises people. The
+forges do not offer anonymous SSH — GitHub answers an unauthenticated
+`git@github.com:…` with `Permission denied (publickey)` whether the repository is
+public or not, and the others behave the same way. So point a public workspace at
+its `https://` URL and supply nothing, or supply a key and use the SSH one; what
+does not work is an SSH URL with no credential.
+
+| | |
+|---|---|
+| `INTERBOX_WORKSPACE_GIT_KEY` | the credential itself |
+| `INTERBOX_WORKSPACE_GIT_KEY_PATH` | the same credential, from a file |
+
+One setting offered twice. Inline suits a secret manager, which hands you a
+value and no filesystem — and base64 is accepted alongside PEM because several
+of them mangle a multi-line value on the way through. A path suits anything that
+already arrives as a file: a mounted secret volume, a projected file. Set both
+and the inline one wins.
+
+There is deliberately no setting that says *which kind* of credential you
+supplied. The URL already decides the transport, and a private key announces
+itself — so Interbox reads the value, recognises a private key by its
+`-----BEGIN … PRIVATE KEY` armour, and treats anything that is not a PEM block at
+all as a token. It then checks that against the remote, and says so plainly when
+the two disagree: a key against an `https://` URL is refused with the
+`git@host:org/repo` form to use instead, and a token against an SSH URL is
+refused as a token where a key is needed. Both of those used to fail much further
+along, as a mangled clone URL or an `invalid format` complaint from `ssh`.
+
+A PEM block that is *not* a private key — a certificate, or a public key — is
+refused by name rather than handed to `ssh`, which is the other way people arrive
+at that same `invalid format`. If you reach for the file with the `.pub` suffix,
+you will be told so.
+
+A key must not be passphrase-protected — nothing here has a terminal to type one
+into, so a key that asks for one is refused with a message saying so rather than
+hanging the clone. A token must survive being put in a URL, so one containing
+whitespace, `@`, `/`, `?` or `#` is refused too. Interbox will not
+percent-encode it for you: if you were already encoding it yourself, doing it
+twice would send a credential that looks well-formed and is wrong, which a forge
+answers with a bare `403`. Encode it yourself if your token really does contain
+one of those characters — a `%2F` is passed through untouched.
+
+A token is only ever sent over `https://`. A plain `http://` remote is refused
+rather than cloned anonymously, because the alternative is a credential crossing
+the network in cleartext on every poll.
+
+Nothing is written into `~/.ssh`. A key is materialised at mode `0600` under the
+engine's own [cache directory](#cache-and-disk), never into the workspace
+checkout, which the dashboard can browse, and `ssh` is pointed at it per git
+command. Once the credential is resolved, both variables are deleted from the
+process environment, so workspace code and the actions the dashboard runs cannot
+read it back out of `process.env`. That is not the same as hiding it. A key file
+is still there for anything running as the same user, which is what the mode and
+the location are for — and a token, having been spliced into the clone URL, is
+stored in the clone's own `.git/config` by git, exactly as it would be if you
+had run the `clone` by hand. Interbox strips it back out before showing you a
+remote, but it is on disk.
+
+Set neither and git behaves as it always has: on a developer's machine it finds
+`~/.ssh` and any running agent, which is usually what you want locally. For an
+SSH remote the engine warns once at boot, because in a deployment a clone with
+no key configured is one that is going to fail for a reason nothing else
+explains.
+
+Changing a credential needs a restart. It is read once, when the engine starts.
+
+The credential reaches the workspace repository and nothing else. After cloning,
+the engine installs the workspace's own dependencies, and that step does not get
+it — so a dependency your `package.json` names as `git+ssh://…` or over private
+`https` will not resolve, and the clone will look fine while the install fails.
+Publish such a dependency to a registry the engine can reach, or vendor it into
+the workspace. The credential stays scoped to the one repository it was issued
+for, which is also what makes a read-only deploy key a complete answer.
+
+### Host keys are checked
+
+The workspace repository is the code this engine imports and executes, so
+whatever the SSH connection actually reaches chooses that code. Whenever Interbox
+supplies the key it verifies the host key on every connection, and there is no
+setting to relax that — no need to go looking for one. An SSH remote whose host
+key cannot be found anywhere fails the clone rather than trusting it. With no key
+configured Interbox is not in the connection at all: git uses the ambient
+`~/.ssh`, and that machine's own ssh configuration decides how strictly it
+checks.
+
+GitHub, GitLab, Bitbucket and Azure DevOps (`ssh.dev.azure.com` and
+`vs-ssh.visualstudio.com`) are already known to the image, so they need nothing
+beyond a key — though Azure DevOps is the one that may refuse an ed25519 deploy
+key, and if it does, generate an RSA one instead
+(`ssh-keygen -t rsa -b 4096 -N ""`). Anything else — a self-hosted forge, a
+mirror inside your own network — you read once and pass in:
+
+```sh
+ssh-keyscan git.example.com
+```
+
+```sh
+INTERBOX_WORKSPACE_SSH_KNOWN_HOSTS="git.example.com ssh-ed25519 AAAAC3Nza…"
+```
+
+`ssh-keyscan` trusts whatever answers it, so compare the fingerprint it prints
+against one your forge publishes before pasting it anywhere.
+`INTERBOX_WORKSPACE_SSH_KNOWN_HOSTS_PATH` takes a `known_hosts` file instead, if
+that is how yours arrives. These two are the only SSH-specific settings left —
+host keys are what an https token has no equivalent of.
+
+What you supply is *added* to what the image already knows rather than replacing
+it — a host is accepted when the key it offers matches any entry — so adding a
+private forge never costs you github.com. It is also the way out when a public
+forge rotates its host key faster than an Interbox release does: set the new
+line and restart the engine. Like the credential, host keys are read once, when
+the engine starts, so a rotation does not reach a process that is already
+running — and that holds for a `_PATH` file just the same, since its contents
+are read at that same moment rather than watched.
+
+### A read-only key is enough
+
+The engine clones, fetches and resets; it never pushes. A deploy key with
+read-only access therefore runs a deployment end to end, and that is what to
+give it.
+
+Write access is a second, separate decision. The dashboard can commit and push a
+branch, but only at `INTERBOX_WORKSPACE_ACCESS=push` or `apply` (see [what the
+dashboard may do](#what-the-dashboard-may-do)) — and only then does the key need
+to be writable. Both have to be true before anything leaves this deployment, and
+neither is the default.
+
+Prefer a deploy key to a personal access token where the forge offers one. A
+deploy key belongs to the repository: it reaches that repository and nothing
+else, and it does not expire. A token belongs to a person — it carries whatever
+that person can reach, stops working when their access does, and expires on a
+clock (GitHub caps a fine-grained token at 366 days, and an organisation can
+require less).
+
+A key also stays out of the clone URL, and a token cannot. `git clone
+https://<token>@host/…` records that URL verbatim in the clone's `.git/config`,
+so the token lives on disk in a second place that nothing rotates for you; a key
+is never part of a URL at all.
 
 ## clone or worktree
 
