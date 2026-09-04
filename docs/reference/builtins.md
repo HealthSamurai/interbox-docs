@@ -6,13 +6,21 @@ import {
   aidboxSender,
   hl7v2Parser,
   ccdaParser,
+  fhirSystem,
+  aidboxSystem,
+  epicSystem,
+  paragonSystem,
 } from "@health-samurai/interbox/builtins";
 ```
 
-Typed handles for the engine's built-in stages, grouped by kind. A pipeline
-references these by value; each stage's config is co-located with its
-descriptor. The engine owns the implementations and resolves them by `type`
-at runtime — see [Stages](../concepts/stages.md).
+Typed handles for the engine's built-ins, grouped by kind. A pipeline references
+the stage descriptors by value; each config is co-located with its descriptor. The
+engine owns the implementations and resolves them by `type` at runtime — see
+[Stages](../concepts/stages.md).
+
+The **system** descriptors at the bottom are not stages. A pipeline never
+references them; a stage imports the handle `defineSystem` returned and calls it —
+see [Systems](../concepts/systems.md).
 
 ## `mllpSource` — MLLP TCP listener source
 
@@ -124,3 +132,55 @@ hl7v2Parser({ skipZSegments: true });
 
 Bound to a source's `parser` field — see [Pipelines](../concepts/pipelines.md)
 for how a source's parser type propagates to which mappers can attach to it.
+
+## System descriptors — `fhirSystem`, `aidboxSystem`, `epicSystem`, `paragonSystem`
+
+Passed to `defineSystem`, not to a pipeline. All four speak base FHIR R4 through
+one client and differ in what has been tested and which credentials they accept —
+see [Systems](../concepts/systems.md) for the per-method support tables and the
+constraints on calling one from a mapper.
+
+```ts
+type FhirJwtAlg = "RS384" | "RS256" | "ES384" | "ES256";
+
+type FhirCredential =
+  | { kind: "basic"; user: Str; password: Str }
+  | { kind: "bearer"; token: Str }
+  | { kind: "client-secret"; clientId: Str; clientSecret: Str }
+  | { kind: "jwt-assertion"; clientId: Str; privateKey: Str; alg?: FhirJwtAlg; kid?: Str };
+
+interface FhirEndpointConfig {
+  fhirBaseUrl: Str;   // required — there is no default
+  tokenUrl: Str;      // required — there is no default
+  scope?: Str;
+  timeoutMs?: Num;    // per attempt. Default 10s; see the ceiling in Systems
+}
+```
+
+| descriptor | accepted `auth.kind` |
+|---|---|
+| `fhirSystem` | all four |
+| `aidboxSystem` | all four |
+| `epicSystem` | `jwt-assertion` |
+| `paragonSystem` | `jwt-assertion`, `client-secret` |
+
+A credential a connector does not accept is a compile error, not a runtime 401.
+
+```ts
+export const ehr = defineSystem(fhirSystem, {
+  id: "ehr-prod",
+  fhirBaseUrl: env("EHR_FHIR_BASE"),
+  tokenUrl: env("EHR_TOKEN_URL"),
+  auth: { kind: "client-secret", clientId: env("EHR_ID"), clientSecret: env("EHR_SECRET") },
+  timeoutMs: 3_000,
+});
+```
+
+The service interface each one yields — `read`, `readBinary`, `search`,
+`findPatientByIdentifier`, `get`, `operation`, `matchPatient` — is read-only by
+contract, because the dashboard's Retry re-runs a mapper. Writes belong in a
+sender.
+
+Support tables are importable alongside the descriptors: `FHIR_SUPPORT`,
+`AIDBOX_SUPPORT`, `EPIC_SUPPORT`, `PARAGON_SUPPORT`. They record what has been
+called and change no behaviour.

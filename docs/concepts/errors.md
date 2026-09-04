@@ -16,6 +16,10 @@ const ERROR_GROUPS = [
   "type",
   "code",
   "unsupported",
+  "source",
+  "mapper",
+  "system",
+  "sender",
   "internal",
 ] as const;
 
@@ -30,7 +34,18 @@ type ErrorGroup = (typeof ERROR_GROUPS)[number];
 | `type` | field present, value violates its declared HL7 datatype |
 | `code` | coded value outside its value set / no concept mapping |
 | `unsupported` | valid message the engine has no converter for |
+| `source` | a parser threw — our code broke, not the data. `parse/...` is the opposite: a fault the parser understood well enough to name |
+| `mapper` | a mapper threw something the engine could not classify |
+| `system` | a read a mapper made against an external API failed — the message is fine |
+| `sender` | a write to the destination failed — the message is fine |
 | `internal` | invariant violations — bugs, not sender data |
+
+`source`, `mapper`, `system` and `sender` name the **stage** rather than a fault in
+the data — "the message is bad" and "our code or a server broke" are different
+triage. The first two are ours; the last two are external, and they That matters when the same server is on both sides — a workspace
+reading Aidbox during mapping and writing Aidbox from the sender produces
+`system/aidbox_unreachable` and `sender/aidbox_unreachable`, the same words for
+opposite directions, and the group is the only thing that distinguishes them.
 
 ## Raising one
 

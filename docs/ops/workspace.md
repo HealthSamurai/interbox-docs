@@ -28,9 +28,9 @@ INTERBOX_WORKSPACE_POLL_MS=30000         # how often to look for changes; 0 disa
 
 A private workspace needs one credential, and `INTERBOX_WORKSPACE_GIT_KEY` is
 it — for both transports. An `https://` remote wants a token, which Interbox
-splices into the clone URL. A `git@…` or `ssh://…` remote wants an SSH private
-key, as PEM or base64-encoded PEM. A public repository over `https://`, or a
-local path, needs nothing at all.
+sends as an `Authorization` header scoped to that remote's own host. A `git@…` or
+`ssh://…` remote wants an SSH private key, as PEM or base64-encoded PEM. A public
+repository over `https://`, or a local path, needs nothing at all.
 
 A public repository over **SSH** still needs a key, which surprises people. The
 forges do not offer anonymous SSH — GitHub answers an unauthenticated
@@ -67,34 +67,67 @@ you will be told so.
 
 A key must not be passphrase-protected — nothing here has a terminal to type one
 into, so a key that asks for one is refused with a message saying so rather than
-hanging the clone. A token must survive being put in a URL, so one containing
-whitespace, `@`, `/`, `?` or `#` is refused too. Interbox will not
-percent-encode it for you: if you were already encoding it yourself, doing it
-twice would send a credential that looks well-formed and is wrong, which a forge
-answers with a bare `403`. Encode it yourself if your token really does contain
-one of those characters — a `%2F` is passed through untouched.
+hanging the clone. A token is sent exactly as you configured it, so one with
+whitespace *inside* it — what a wrapped copy/paste leaves behind — is refused
+too, rather than delivered whole and answered with a bare `401` that says nothing
+about why.
 
-A token is only ever sent over `https://`. A plain `http://` remote is refused
-rather than cloned anonymously, because the alternative is a credential crossing
-the network in cleartext on every poll.
+> **Upgrading?** Three things changed with it. Releases before the token moved
+> into a header put it in the clone URL, and refused any token containing `@`,
+> `/`, `?` or `#` because a URL does not survive them — the advice was to
+> percent-encode it yourself. Such tokens are now accepted as they stand, and
+> nothing decodes them, so if you took that advice, put the original value back.
+> And a token configured against a **public** repository now goes out on the
+> first request. A URL credential was only ever offered after the forge asked for
+> one, and a public repository never asks — so any value at all worked there.
+> An expired or wrong one now turns a clone that used to succeed anonymously into
+> a `401`. Unset the credential if the repository is public. And the Basic
+> credential itself has a new shape: the token used to go in the username slot
+> with an empty password, and now goes in the password slot as
+> `x-access-token:<token>`, which is what CI clones and the forges' own
+> instructions use. GitHub accepts either, so nothing is asked of you there, and
+> Azure DevOps — which requires the token to be the password — now works. It is a
+> change on the wire all the same, so a forge that only ever took the old shape
+> is the one to check.
+
+A token is only ever sent over `https://`. A plain `http://` remote with a token
+configured is refused at boot rather than cloned: sending it would put the
+credential on the wire in cleartext on every poll, and not sending it would leave
+a credential configured that nothing ever uses. If that repository really is
+public, unset the credential and the clone goes ahead.
 
 Nothing is written into `~/.ssh`. A key is materialised at mode `0600` under the
 engine's own [cache directory](#cache-and-disk), never into the workspace
 checkout, which the dashboard can browse, and `ssh` is pointed at it per git
-command. Once the credential is resolved, both variables are deleted from the
-process environment, so workspace code and the actions the dashboard runs cannot
-read it back out of `process.env`. That is not the same as hiding it. A key file
-is still there for anything running as the same user, which is what the mode and
-the location are for — and a token, having been spliced into the clone URL, is
-stored in the clone's own `.git/config` by git, exactly as it would be if you
-had run the `clone` by hand. Interbox strips it back out before showing you a
-remote, but it is on disk.
+command. A token is never written down: it is handed to each `git` process as a
+request header, so it is not in the checkout, not in any config file, and not on
+any command line. It does ride in that process's environment, which anything
+running as the same user can read for as long as the child lives — and a fetch
+can run for minutes. Every `git` the engine spawns carries it, the purely local
+ones included. The clone URL this replaced was worse on both counts: it put the
+credential in the argv of every `ls-remote` the poll ran, which `/proc` makes
+readable by *any* user rather than only the same one — and it stayed behind in
+the clone's own config once the process was gone. Once the credential is
+resolved, both variables are deleted from the process environment, so workspace
+code and the actions the dashboard runs cannot read it back out of
+`process.env`. That is not the same as hiding it: a key file is still there for
+anything running as the same user, which is what the mode and the location are
+for, and so is the environment of a `git` that is still running.
 
-Set neither and git behaves as it always has: on a developer's machine it finds
-`~/.ssh` and any running agent, which is usually what you want locally. For an
-SSH remote the engine warns once at boot, because in a deployment a clone with
-no key configured is one that is going to fail for a reason nothing else
-explains.
+An engine upgraded from a release that cloned with the token in the URL still has
+that URL in its existing copy of the repository. The first update after the
+upgrade rewrites the remote, so the credential leaves the disk on its own — there
+is nothing to clean up by hand, and no need to discard the cache.
+
+Set neither and an SSH remote falls back to whatever the machine already has: on
+a developer's machine git finds `~/.ssh` and any running agent, which is usually
+what you want locally. One thing does not fall back. Every `git` the engine runs
+has `GIT_TERMINAL_PROMPT=0` set, overriding an ambient `1`, because nothing here
+has a terminal to answer a prompt with — so a private `https://` workspace with
+no credential configured fails with `terminal prompts disabled` rather than
+asking for a password and hanging. For an SSH remote the engine warns once at
+boot, because in a deployment a clone with no key configured is one that is going
+to fail for a reason nothing else explains.
 
 Changing a credential needs a restart. It is read once, when the engine starts.
 
@@ -165,11 +198,6 @@ else, and it does not expire. A token belongs to a person — it carries whateve
 that person can reach, stops working when their access does, and expires on a
 clock (GitHub caps a fine-grained token at 366 days, and an organisation can
 require less).
-
-A key also stays out of the clone URL, and a token cannot. `git clone
-https://<token>@host/…` records that URL verbatim in the clone's `.git/config`,
-so the token lives on disk in a second place that nothing rotates for you; a key
-is never part of a URL at all.
 
 ## clone or worktree
 

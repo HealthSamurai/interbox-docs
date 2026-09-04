@@ -7,6 +7,7 @@
 
 * [Pipelines](concepts/pipelines.md)
 * [Stages](concepts/stages.md)
+* [Systems](concepts/systems.md)
 * [Webhooks](concepts/webhooks.md)
 * [Env and Config](concepts/env-and-config.md)
 * [Errors](concepts/errors.md)
