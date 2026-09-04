@@ -29,5 +29,6 @@
 * [Deployment](ops/deploy.md)
 * [The Workspace](ops/workspace.md)
 * [Securing Dashboard Access](ops/secure-access.md)
+* [Supply Chain Security](ops/supply-chain-security.md)
 * [Testing Locally with k3d](ops/local-testing.md)
 * [Updating the Engine](ops/updating.md)
