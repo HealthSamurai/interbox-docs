@@ -42,3 +42,17 @@ assistant — they're not part of the workspace-authoring workflow this book
 documents. The human-facing equivalents are the dashboard (error queue,
 message inspection, "Simulate message") and your editor working against the
 SDK's generated types.
+
+## Reaching a dashboard that requires a sign-in
+
+Interbox requires a login by default, and the CLI is not a browser. The only
+credential it can carry is the short-lived grant the dashboard mints for an
+assistant conversation, which that conversation's environment already holds as
+`INTERBOX_SERVICE_TOKEN` — so these commands work from inside the dashboard
+assistant. There is no deployment-wide token to set: a value put in that variable
+by hand is not a credential the API knows, and every command fails with a `401`.
+
+A grant reaches only the routes the CLI calls — see
+[Securing Dashboard Access](../ops/secure-access.md). The CLI refuses to send it
+to a plain-`http` `INTERBOX_API_URL` that is not loopback, since that would put
+the credential on the network in cleartext.

@@ -291,8 +291,9 @@ reach what this deployment is running?** A pushed branch cannot — it waits for
 human to merge it. Switching the ref, or writing into a worktree the engine runs
 in place, does it immediately.
 
-**The dashboard has no login.** Whoever can open it gets whatever this allows,
-so treat it as a property of the environment rather than of a person:
+**The dashboard has a login, but no per-user permission.** Everyone who signs in
+gets whatever this allows, so treat it as a property of the environment rather
+than of a person:
 
 - **production** — `read`, or `push` if you want people proposing pipeline
   changes from the browser. Never `apply`.
@@ -311,8 +312,8 @@ in different places:
 
 - **clone** — the copy is reset on every refresh, so an edit only survives as a
   commit. The dashboard writes your changed files, commits them as
-  `interbox-dashboard` (there is no login, so there is no author to attribute
-  them to) and pushes to a branch you name. Never the deployed branch, never the
+  `interbox-dashboard` — one shared identity, since the default deployment has one
+  shared account — and pushes to a branch you name. Never the deployed branch, never the
   remote's default. Open a pull request from there as usual.
 - **worktree** — the file on disk *is* what runs, so the dashboard saves it
   there and the engine picks it up on the next poll. Committing is yours to do,
