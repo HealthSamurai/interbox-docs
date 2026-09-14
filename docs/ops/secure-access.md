@@ -534,16 +534,18 @@ it. It is a request you make yourself, with the cookie your browser already hold
 ```sh
 curl -X POST https://interbox.internal.example/api/auth/sessions/revoke-all \
   -H 'Content-Type: application/json' \
-  -H 'Sec-Fetch-Site: same-origin' \
+  -H 'Origin: https://interbox.internal.example' \
   -b '__Host-interbox_session=<your session cookie>' \
   -d '{}'
 ```
 
 Both headers are load-bearing. A state-changing request carrying the session
-cookie has to declare `application/json` and has to say it is same-origin, or it
-is refused with `403` — the same two rules that stop another site's page using
-your logged-in browser. The cookie is `HttpOnly`, so you cannot read it with
-`document.cookie`; take it from your browser's storage inspector.
+cookie has to declare `application/json` and has to name this deployment as its
+`Origin`, or it is refused with `403` — the same two rules that stop another
+site's page using your logged-in browser. A browser sends `Origin` on every
+request that is not a `GET`, so nothing in the dashboard has to think about it;
+a command-line client has to send it. The cookie is `HttpOnly`, so you cannot
+read it with `document.cookie`; take it from your browser's storage inspector.
 
 It ends every session, every assistant conversation, and every conversation's
 credential — yours among them, so it signs you out too. That is what makes
@@ -569,14 +571,19 @@ as something signing out has already handled.
 
 ### Browser support
 
-Interbox decides whether a request came from its own pages using the
-`Sec-Fetch-Site` header, and refuses a **cookie-carrying** request that does not
-send it. That needs **Chrome 76+, Firefox 90+, or Safari 16.4+**.
+Interbox decides whether a request came from its own pages using the `Origin`
+header. The floor for sending it on a **same-origin** write is **Chrome 51+,
+Firefox 70+, Safari 12+** — years lower than the fetch-metadata one below, and
+below anything still receiving security updates.
 
-An older browser fails in an unhelpful shape, so it is worth recognising: the
-sign-in itself succeeds — it carries no cookie yet — and then every request
-afterwards is refused with `403`. A dashboard that lets you in and then shows
-nothing but errors is almost always this.
+Where the browser also sends [Fetch Metadata](https://www.w3.org/TR/fetch-metadata/)
+— the `Sec-Fetch-*` headers, **Chrome 76+, Firefox 90+, Safari 16.4+** — Interbox
+applies a second, stricter set of rules on top: a cookie-carrying request must say
+it is same-origin, and a cross-origin link may not navigate to an API route. Those
+headers are sent only to a *potentially trustworthy* origin, meaning `https` or
+loopback, so a deployment served over plain `http` on a private address gets none
+of them and rests on `Origin` alone. See
+[When there is no TLS anywhere](#when-there-is-no-tls-anywhere).
 
 ### Turning the password account off
 
@@ -689,9 +696,11 @@ browser → /api/auth/start → provider login → /api/auth/callback → dashbo
 | `503` "the identity provider could not be reached" | the issuer does not match what the provider publishes, the Interbox process cannot reach it, or that URL answered with a redirect |
 | The provider rejects the request before showing a login | its registered redirect URI is not `<INTERBOX_PUBLIC_URL>/api/auth/callback`, exactly |
 | `400` "this sign-in did not start here" | the login cookie is missing, older than ten minutes, or already used. Start again from the sign-in page |
+| `403` on `/api/auth/start` from a bookmark or a link on another site | that address is not an entry point: reach it from this deployment's own sign-in page, which is what makes it same-origin |
+| `403` "a cookie this deployment sets arrived more than once" | another host on your parent domain has set a cookie of the same name. The response clears it; reload once. Only possible without TLS, where the `__Host-` prefix is unavailable |
 | `400` "this sign-in could not be completed" | `state`, the code exchange, or token verification failed. The server log names which |
 | `403` "this account may not use this instance" | authentication worked; no allow-rule matches that identity. The log records the subject that tried |
-| Sign-in succeeds, then every panel shows errors | the browser is older than the `Sec-Fetch-Site` floor — see Browser support above |
+| Sign-in succeeds, then every panel shows errors | the dashboard is being served from a different origin than the API, so its requests carry a foreign `Origin` — see [Writes are same-origin only](#writes-are-same-origin-only) |
 
 Every one of these is recorded in the server log with a reason. The browser is
 deliberately told less than the log: a sign-in page that explains precisely
@@ -712,6 +721,68 @@ arriving with any other `Host` is refused, which is what stops a DNS-rebinding
 page in someone's browser from talking to a port-forwarded dashboard. It must be
 `https` unless it is loopback, since a `Secure` cookie cannot travel over plain
 HTTP.
+
+### When there is no TLS anywhere
+
+```sh
+INTERBOX_AUTH_ALLOW_INSECURE_HTTP=true
+```
+
+Permits plain `http` on a non-loopback host for two addresses and no others:
+`INTERBOX_PUBLIC_URL` and `INTERBOX_AUTH_ISSUER`. Off unless set to `true` or
+`1`; an unrecognised value is refused rather than read as off.
+
+It does **not** permit a plain `http` endpoint inside a discovery document. That
+follows the issuer rather than this flag: a cleartext issuer may name `http`
+endpoints **on its own origin**, because an on-path attacker can already rewrite
+the document it served and nothing beyond that origin was ever conceded. An
+`https` issuer may name none, however this flag is set, and neither may a
+loopback issuer — `http://localhost` is a trustworthy origin, not a cleartext
+one, so it vouches for its own endpoints and for nobody else's. A deployment that
+turns this on for its own origin does not quietly downgrade its provider.
+
+This is for a private network with no TLS anywhere, not a convenience. What it
+gives up:
+
+- The session cookie and every exchange with the identity provider cross the
+  network in cleartext, so anyone on the path can read one and replay it.
+- **If the issuer itself is `http`**, its discovery document arrives
+  unauthenticated, so a substituted `jwks_uri` points token verification at an
+  attacker's keys — they can then mint `id_token`s the login accepts. **A
+  cleartext issuer means the login holds only as far as the network does.** An
+  `https` issuer is unaffected: its endpoints are still required to be `https`,
+  and a document naming an `http` one is refused.
+- The session, sign-in and licence cookies lose `Secure` and their `__Host-`
+  prefix, because a browser stores neither over `http`. Without `__Host-`, a
+  sibling host on the same parent domain can set a cookie the browser will send
+  here. Interbox refuses a cookie header that names one of its cookies twice, so
+  a shadowing attempt is a refusal rather than a silent swap, and the refusal
+  carries `Set-Cookie` headers that delete the stray copy from the host and from
+  each parent domain it could have been set on — so one reload recovers. Those
+  headers clear `Path=/`, which is where a cookie has to be set to reach every
+  route; a copy planted on a narrower path is refused just the same but has to be
+  cleared from the browser by hand. What nothing can do over cleartext is make the
+  `__Host-` prefix available, which is what would have stopped the cookie being
+  set in the first place.
+- The browser sends no [Fetch Metadata](https://www.w3.org/TR/fetch-metadata/) to
+  a cleartext origin on a private address, so the stricter same-origin rules
+  described under [Browser support](#browser-support) never run. What is left is
+  still four independent layers — `SameSite=Lax` cookies, the CORS preflight, the
+  `application/json` requirement, and the `Origin` check — and the first three are
+  untouched by the scheme. The cost is the fourth's blind spot: an `Origin` is
+  absent on a cross-origin `<img>`, and such a request is indistinguishable from
+  one of the dashboard's own reads. Two `GET`s do change something, and neither
+  is worth a cross-site link: the licence return has to present both a cookie
+  this process minted and the matching value it was sent away with, and starting
+  a single sign-on writes a short-lived login row that expires on its own. Every
+  other `GET` only reads.
+- A cross-origin link can open a `GET` API route in the operator's tab and render
+  JSON there. The other site cannot read what it rendered — it is a cross-origin
+  document — so this is untidy rather than a disclosure.
+
+Boot logs a warning naming each variable that is in cleartext. Loopback is
+unaffected either way: browsers already treat `http://localhost` as a secure
+origin, and send it the metadata a private address does not get.
 
 ## When it is misconfigured, ingestion keeps running
 
@@ -847,14 +918,23 @@ page is that setup.
 
 ## Writes are same-origin only
 
-Every non-GET `/api/…` request is checked before it reaches a route. A browser
-`Origin` header naming anything but this deployment's own host is refused with 403,
-and so is a declared content type other than `application/json`. That stops a page on
-another site from using a logged-in operator's browser to commit to your workspace,
-switch its branch, or run a workspace action. `localhost` origins get no special
-treatment on a remote deployment: they are accepted only when the deployment itself
-is served from `localhost`, so a page running on an operator's own machine cannot
-write to a remote instance through their browser.
+Every `/api/…` request is checked before it reaches a route. An `Origin` header
+naming anything but this deployment's own host is refused with 403, whatever the
+method, and on a non-GET so is a declared content type other than
+`application/json`. That stops a page on another site from using a logged-in
+operator's browser to commit to your workspace, switch its branch, or run a
+workspace action. `localhost` origins get no special treatment on a remote
+deployment: they are accepted only when the deployment itself is served from
+`localhost`, so a page running on an operator's own machine cannot write to a
+remote instance through their browser.
+
+A request carrying the session cookie is held to more than that: a non-GET must
+send an `Origin` and it must be this deployment's own. Absence is refused rather
+than waved through, because a browser always sends one. A `GET` may omit it —
+browsers send no `Origin` on a same-origin read — but one that names another
+origin is refused, which is what stops another site opening a stream against a
+logged-in browser. A client holding a service credential is judged on that
+credential instead, so command-line use is unaffected.
 
 `INTERBOX_ALLOWED_ORIGINS` — a comma-separated list — adds origins the guard treats as
 this deployment's own, which satisfies the `Origin` check for them.
@@ -863,7 +943,7 @@ It does **not** make a dashboard on a different host work, and it is worth being
 about that rather than letting the name suggest otherwise. The session cookie is
 `SameSite=Lax`, so it rides top-level navigations and nothing else: a cross-site
 `fetch` carries no cookie, and every gated route answers `401` however the origin is
-listed. A cross-site state-changing request is refused separately, on `Sec-Fetch-Site`.
+listed. A cross-site state-changing request is refused separately, on `Origin`.
 So with the login on, listing an origin buys a browser exactly the routes that need no
 session — `/api/health`, `/api/ready`, and `/api/auth/status`.
 
