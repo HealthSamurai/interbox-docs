@@ -197,5 +197,7 @@ this resource's dependencies and ships them in the same bundle.
 
 If you supply your own `agent`, keep `who` as a `display` unless the resource it
 references actually exists at the destination: a `who: { reference: … }` is
-collected as a dependency of the Provenance, and an unresolvable one blocks the
-bundle from ever being sent.
+collected as a dependency of the Provenance. The bundle is still sent, but if the
+destination reports the referenced resource missing, the affected resources are
+deferred and retried — every five minutes by default, configurable through the
+sender's `retryDelayMs` — until the target arrives.

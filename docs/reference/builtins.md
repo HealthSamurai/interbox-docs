@@ -103,6 +103,8 @@ interface AidboxSenderConfig {
   batchSize?: number;  // max rows claimed per loop
   // consecutive transient failures to retry before the batch is recorded errored
   maxRetries?: number;
+  // delay before retrying resources deferred on a missing reference target (default 5 min)
+  retryDelayMs?: number;
 }
 
 const aidboxSender: SenderDescriptor<"aidbox", AidboxSenderConfig>;
