@@ -199,5 +199,6 @@ If you supply your own `agent`, keep `who` as a `display` unless the resource it
 references actually exists at the destination: a `who: { reference: … }` is
 collected as a dependency of the Provenance. The bundle is still sent, but if the
 destination reports the referenced resource missing, the affected resources are
-deferred and retried — every five minutes by default, configurable through the
-sender's `retryDelayMs` — until the target arrives.
+deferred and retried with an exponential backoff — starting at five seconds and
+doubling per attempt up to a ceiling of five minutes by default, configurable
+through the sender's `retryDelayMs` — until the target arrives.

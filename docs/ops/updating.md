@@ -91,9 +91,9 @@ grace period to persist and ACK.
 
 ## Rolling back
 
-Interbox uses Drizzle Kit, which is **forward-only**: `drizzle-kit generate`
-emits only up-migrations and there is no rollback command, so there are no
-down-migrations to run. If an update applied a schema change, moving the image
+Interbox migrations are **forward-only**: the chain holds only up-migrations
+and there is no rollback command, so there are no down-migrations to run. If
+an update applied a schema change, moving the image
 tag back runs the older engine against the newer schema, which it may not
 expect. So:
 
