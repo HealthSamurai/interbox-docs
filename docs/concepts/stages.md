@@ -11,7 +11,7 @@ Who implements what:
 
 | stage | who writes it | you configure it with |
 |---|---|---|
-| source | engine | `mllpSource({ id, host, port, parser })` |
+| source | engine, or **you** | `mllpSource({ id, host, port, parser })`, or your own `defineSource` |
 | parser | engine | `hl7v2Parser({ skipZSegments })`, bound to a source |
 | mapper | **you** | `defineMapper({ type, parser, map })` |
 | sender | engine | `aidboxSender({ url, auth, batchSize, maxRetries })` |
@@ -22,8 +22,11 @@ A source produces raw messages (e.g. an MLLP TCP listener); its bound parser
 turns each one into a typed structure and determines which inbound table it
 lands in — the table is derived from the parser, never configured separately.
 
-You never implement a source or parser; you pick a built-in descriptor and
-configure it — see [/builtins](../reference/builtins.md).
+You never implement a parser, and usually not a source either: you pick a
+built-in descriptor and configure it — see [/builtins](../reference/builtins.md).
+When no built-in source fits, define your own with `defineSource`; it reads its
+input itself and hands messages to the engine — see
+[Sources](../reference/index.md#sources).
 
 ## Mapper
 

@@ -66,4 +66,5 @@ from how the engine works, so they are documented here rather than in the chart:
 
 How the pod gets that workspace — which branch it tracks, how pipeline changes
 reach a running engine, and what the dashboard is allowed to change — is
-[The Workspace](workspace.md).
+[The Workspace](workspace.md). Every host the pod connects to, for writing egress
+rules, is in [Network Access](network.md).

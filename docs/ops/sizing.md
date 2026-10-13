@@ -53,7 +53,8 @@ Two things to account for beyond steady state:
 - **Boot does real work.** For a remote workspace the engine does a shallow
   `git clone` + `bun install` + `bun build` on startup (and on every reload).
   That is a transient CPU spike, a few hundred MB, and requires **outbound
-  network** plus a writable temp dir.
+  network** plus a writable temp dir ([Network Access](network.md) lists the
+  hosts).
 - **The image carries the dashboard assistant SDK.** Factored into the ~1 GB
   image size, not into steady-state RAM.
 
