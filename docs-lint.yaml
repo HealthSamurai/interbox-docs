@@ -5,3 +5,6 @@ summary: SUMMARY.md
 checks:
   warn_only:
     - title-mismatch
+  absolute-links:
+    domains:
+      - www.health-samurai.io/docs/interbox
