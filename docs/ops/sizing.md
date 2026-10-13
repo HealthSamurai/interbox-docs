@@ -87,6 +87,83 @@ not configured by Interbox.
 > `tx.health-samurai.io`. That is an outbound network dependency at runtime
 > unless you switch it to a local terminology engine.
 
+## PostgreSQL extensions
+
+Interbox needs two extensions and Aidbox needs two, with `pg_trgm` common to
+both. Aidbox can use several more beyond those. Some managed services also make
+you allowlist each one before anything can create it.
+
+| Extension            | Needed by | Required?                      | What for                                                       |
+| -------------------- | --------- | ------------------------------ | -------------------------------------------------------------- |
+| `pg_trgm`            | both      | required                       | trigram indexes — in Interbox, message and patient-name search |
+| `btree_gist`         | Interbox  | required                       | GiST operator classes for plain column types                   |
+| `unaccent`           | Aidbox    | required                       | accent-insensitive search                                      |
+| `pgcrypto`           | Aidbox    | optional                       | cryptographic functions                                        |
+| `pg_stat_statements` | Aidbox    | optional                       | query statistics for performance monitoring                    |
+| `fuzzystrmatch`      | Aidbox    | optional, MDM module only      | string-similarity functions                                    |
+| `postgis`            | Aidbox    | optional, `Location.near` only | geographic search                                              |
+
+Without a required extension the app does not start: Interbox's first migration
+fails, and Aidbox refuses to boot. Aidbox starts without an optional one and
+logs a warning, but whatever uses it — the MDM module, `Location.near` search,
+query statistics — is unavailable. Aidbox's own
+[PostgreSQL Extensions](https://www.health-samurai.io/docs/aidbox/database/postgresql-extensions)
+page has its full list, including the ones left out here, and wins wherever it
+disagrees with this table.
+
+**Who creates them.** Interbox creates its two in its first migration on boot
+(`CREATE EXTENSION IF NOT EXISTS`, as the `DATABASE_URL` role). Aidbox creates
+its own on boot unless `BOX_DB_INSTALL_PG_EXTENSIONS=false`. With that set it
+installs nothing but still refuses to start until the required ones exist. An
+admin can create any of them beforehand instead. Extensions are per database, so
+create them in the database the app connects to. For Interbox, use a schema on
+its role's `search_path` — `public` by default — because its migrations name
+`gin_trgm_ops` unqualified. Aidbox looks for them in the schema
+`BOX_DB_EXTENSION_SCHEMA` names; see its
+[managed PostgreSQL guide](https://www.health-samurai.io/docs/aidbox/deployment-and-maintenance/deploy-aidbox/run-aidbox-on-managed-postgresql).
+
+**Which role can.** `pg_trgm`, `btree_gist`, `unaccent`, `pgcrypto` and
+`fuzzystrmatch` are *trusted*: any role with `CREATE` on the database, such as
+its owner, can create them. `pg_stat_statements` and `postgis` are not, and
+need a superuser — on a managed service, usually the provider's admin role (on
+Azure, a member of `azure_pg_admin`). If Aidbox's own role cannot create
+`pg_stat_statements`, an admin creates it in Aidbox's database, or Aidbox starts
+without it and logs a warning. `pg_stat_statements` also works only when it is
+loaded through `shared_preload_libraries`, which takes a restart to change.
+Azure preloads it on every flexible server.
+
+**Allowlisting.** Azure Database for PostgreSQL flexible server refuses
+`CREATE EXTENSION` for any extension not named in the `azure.extensions` server
+parameter. That is one value for the whole server, so a server Interbox and
+Aidbox share has to list both:
+
+| Server holds        | `azure.extensions`                                        |
+| ------------------- | --------------------------------------------------------- |
+| Interbox only       | `pg_trgm,btree_gist`                                      |
+| Aidbox only         | `pg_trgm,unaccent,pgcrypto,pg_stat_statements`            |
+| Interbox and Aidbox | `pg_trgm,btree_gist,unaccent,pgcrypto,pg_stat_statements` |
+
+The Aidbox values are what Aidbox creates on boot — `pg_trgm`, `unaccent`,
+`pgcrypto` — plus `pg_stat_statements`. The minimum it starts with is
+`pg_trgm,unaccent`. Add `fuzzystrmatch` for Aidbox's MDM module and `postgis`
+for `Location.near`.
+
+The value replaces the whole list. If the server already allows extensions for
+something else, keep them in the list and add these. `SHOW azure.extensions;`
+prints the current value. Set it on the server's **Parameters** page or with the
+CLI ([Microsoft's guide](https://learn.microsoft.com/en-us/azure/postgresql/extensions/how-to-allow-extensions)),
+and always pass `--value` — without it, the command resets the parameter to its
+default:
+
+```sh
+az postgres flexible-server parameter set \
+  --resource-group <resource-group> --server-name <server> \
+  --name azure.extensions --value pg_trgm,btree_gist
+```
+
+Other managed services gate extensions their own way; check your provider's list
+of supported extensions.
+
 ## Disk: the first limit
 
 There is no retention job. Plan disk for how long you keep history, not for a

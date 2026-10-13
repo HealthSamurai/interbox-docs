@@ -907,7 +907,7 @@ REVOKE pg_execute_server_program FROM interbox;
 ```
 
 Some managed services also require extensions to be allowlisted before the owner can
-create them — see [Deployment gotchas worth knowing](#deployment-gotchas-worth-knowing).
+create them — see [PostgreSQL extensions](sizing.md#postgresql-extensions).
 
 ## Additional layers
 
@@ -1049,11 +1049,10 @@ own log, and the two are worth keeping together.
 
 ## Deployment gotchas worth knowing
 
-- **Managed Postgres extensions** — Interbox needs `pg_trgm` + `btree_gist`. Some
-  managed services require **allowlisting extensions** before `CREATE EXTENSION`
-  works (e.g. Azure Database for PostgreSQL: set the server parameter
-  `azure.extensions` to include `PG_TRGM,BTREE_GIST`). Otherwise the boot
-  migration fails.
+- **Managed Postgres extensions** — some managed services require **allowlisting
+  extensions** before `CREATE EXTENSION` works; otherwise the boot migration
+  fails. [PostgreSQL extensions](sizing.md#postgresql-extensions) lists what
+  Interbox and Aidbox need, with the Azure `azure.extensions` value to paste.
 - **TLS to Postgres** — put `sslmode=require` (or `verify-full` + the provider CA)
   in `DATABASE_URL`. See the chart's
   [PREREQUISITES](https://github.com/HealthSamurai/helm-charts/blob/main/interbox/PREREQUISITES.md).
