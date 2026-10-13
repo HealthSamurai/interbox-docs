@@ -103,11 +103,11 @@ you allowlist each one before anything can create it.
 | `fuzzystrmatch`      | Aidbox    | optional, MDM module only      | string-similarity functions                                    |
 | `postgis`            | Aidbox    | optional, `Location.near` only | geographic search                                              |
 
-Without a required extension the app does not start: Interbox's first migration
-fails, and Aidbox refuses to boot. Aidbox starts without an optional one and
-logs a warning, but whatever uses it — the MDM module, `Location.near` search,
-query statistics — is unavailable. Aidbox's own
-[PostgreSQL Extensions](https://www.health-samurai.io/docs/aidbox/database/postgresql-extensions)
+If a required extension is missing and cannot be created, the app does not
+start: Interbox stops before it migrates, and Aidbox refuses to boot. Aidbox
+starts without an optional one and logs a warning, but whatever uses it — the
+MDM module, `Location.near` search, query statistics — is unavailable. Aidbox's
+own [PostgreSQL Extensions](https://www.health-samurai.io/docs/aidbox/database/postgresql-extensions)
 page has its full list, including the ones left out here, and wins wherever it
 disagrees with this table.
 
@@ -163,6 +163,14 @@ az postgres flexible-server parameter set \
 
 Other managed services gate extensions their own way; check your provider's list
 of supported extensions.
+
+**What Interbox checks.** Before it migrates, Interbox checks that it can create
+each extension it still lacks: the server ships it, `azure.extensions` lists it
+where that parameter exists, and its role has `CREATE` on the database. If not,
+it logs one error naming every missing extension and every reason, and exits
+without migrating. When `azure.extensions` is what blocks it, the error gives
+the exact value to set — the current list plus what is missing — and when
+`CREATE` is, the `GRANT` to run.
 
 ## Disk: the first limit
 

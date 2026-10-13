@@ -37,6 +37,11 @@ sender.
 `.env` is also where you override the rest — pinning `INTERBOX_VERSION`, setting
 a real `AIDBOX_CLIENT_SECRET`, or pointing at a private registry.
 
+Working on the workspace's code locally needs [Bun](https://bun.sh) 1.4 or newer.
+Older Bun cannot read the template's `bun.lock`: `bun install` warns that it is
+ignoring the lockfile, resolves every dependency again and rewrites `bun.lock`,
+and `bun install --frozen-lockfile`, as CI runs it, fails.
+
 ```sh
 # postinstall runs `interbox sync` automatically, mirroring this package's
 # skills/interbox/* into .claude/skills/interbox-*

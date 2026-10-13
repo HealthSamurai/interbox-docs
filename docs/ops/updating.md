@@ -6,6 +6,12 @@ lockstep: the **engine image** (`healthsamurai/interbox` on Docker Hub) and the
 Updating means moving the image to a new tag and keeping the workspace's SDK in
 a compatible range. Database migrations run automatically on boot.
 
+Before updating, read the
+[release notes](https://github.com/HealthSamurai/interbox-workspace/releases) of
+every version between yours and the target: a change you must act on first, such
+as a new required Postgres extension or environment variable, is listed at the
+top of its release under **Upgrade Notes**.
+
 > Updating the **engine** (this page) is separate from updating your
 > **pipelines**. Pipeline changes are a workspace edit the running engine picks
 > up on its own by re-cloning and rebuilding — no image change. See
@@ -60,6 +66,9 @@ workspace's SDK and redeploy it:
 interbox pin 1.4.1      # rewrites @health-samurai/interbox to ^1.4.1 in package.json
 bun install
 ```
+
+The template's `bun.lock` needs Bun 1.4 or newer for that `bun install`; see
+[Getting Started](../getting-started.md).
 
 `interbox pin` with no argument reads `$INTERBOX_VERSION`, so one variable can
 pin both the image tag and the SDK dependency — see [CLI](../concepts/cli.md).
