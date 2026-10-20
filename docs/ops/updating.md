@@ -144,6 +144,15 @@ settings they need. They install your copy's dependencies with
 `./node_modules/.bin/interbox workspace sync --platform ...`, so the CLI is the version your
 `bun.lock` pins and only moves when you merge a sync pull request.
 
+GitHub starts no workflows for a pull request that the workflow token opens or pushes to. On
+GitHub the job therefore opens its pull request as a draft, and CI starts when a person marks it
+ready for review. If you replace the template's CI workflow, keep its `ready_for_review` trigger.
+A later run that pushes a new `upstream-sync` head makes the pull request a draft again, so mark it
+ready once more after that push. Without a push, a run changes the draft state only when it newly
+finds Upgrade Notes or cannot check the release notes, as described above. In a repository that
+does not allow draft pull requests, the pull request opens ready, and you close and reopen it to
+start CI. The description says which of the two applies.
+
 Some changes need a run by hand, with your own git credentials:
 
 - On GitHub the workflow token cannot push changes under `.github/workflows/`, and the sync does
@@ -169,6 +178,10 @@ the sync also warns before pushing if the branch changes CI definitions. Once th
 by hand, scheduled runs on either platform open or update its pull request and leave the branch as
 it is. On Azure, delete that branch once its pull request completes: the pipeline can only rebuild
 a branch it created.
+
+On GitHub, a scheduled run closes the issue it opened once it opens or updates the pull request
+for the target release, or finds the copy up to date. Its closing comment links the pull request
+or says the copy is up to date.
 
 ### What the sync trusts
 
