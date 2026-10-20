@@ -43,8 +43,6 @@ ignoring the lockfile, resolves every dependency again and rewrites `bun.lock`,
 and `bun install --frozen-lockfile`, as CI runs it, fails.
 
 ```sh
-# postinstall runs `interbox sync` automatically, mirroring this package's
-# skills/interbox/* into .claude/skills/interbox-*
 bun install
 bun run typecheck
 bun test

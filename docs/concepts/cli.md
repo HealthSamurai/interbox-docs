@@ -3,19 +3,6 @@
 The package ships an `interbox` bin (`bunx interbox …`, or `bun run
 interbox-cli …` in the workspace template, which aliases it).
 
-## `interbox sync`
-
-```sh
-# mirror skills/interbox/* -> .claude/skills/interbox-*
-interbox sync
-```
-
-Mirrors the Claude Code skills shipped in this package into the workspace's
-`.claude/skills/`. The template runs it from `postinstall`, so `bun install`
-keeps the skills in step with the installed SDK version. It prunes any
-`interbox-*` skill directory the installed version no longer ships and never
-touches skills outside that namespace.
-
 ## `interbox pin`
 
 ```sh
@@ -32,6 +19,20 @@ docker-compose uses for the engine image tag, so one variable pins both.
 The engine (Docker image) and the SDK (npm package) are versioned in
 lockstep — pin both to the same number to guarantee they came from the same
 commit.
+
+## `interbox workspace`
+
+```sh
+interbox workspace status [--upstream <url>] [--into <branch>] [--json]
+interbox workspace sync   [--platform github|azure] [--upstream <url>] [--into <branch>] [--dry-run]
+```
+
+Compares a workspace copy with the upstream template's releases and builds the upgrade pull
+request from an `upstream-sync` branch. `--platform` is for the scheduled CI runs, which run the
+version the copy's `bun.lock` pins and use the platform's API to open the pull request. Without it,
+`sync` pushes with your own git credentials and prints the link that opens the pull request. For a
+one-off run, use `bunx @health-samurai/interbox@<version> workspace sync` with an exact version.
+See [Track upstream workspace releases](../ops/updating.md#track-upstream-workspace-releases).
 
 ## The `assistant` namespace
 

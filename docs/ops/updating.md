@@ -83,6 +83,112 @@ the same major version (or the same minor while 0.x). Run `interbox pin 2.0.0`
 and reinstall, or set INTERBOX_VERSION to an image matching SDK 1.3.0.
 ```
 
+## Track upstream workspace releases
+
+Your workspace began as a copy of the public
+[interbox-workspace](https://github.com/HealthSamurai/interbox-workspace) template. The template's
+releases are tagged `v<engine version>+<N>`. Every engine release comes with a `+0` release, and a
+higher `N` is a template-only change on the same engine. The CLI compares your copy with these
+releases and prepares an upgrade pull request:
+
+```sh
+interbox workspace status            # where the copy is, what is newer, what breaks
+interbox workspace sync --dry-run    # build the branch, push nothing, print the plan and body
+interbox workspace sync              # push the upstream-sync branch, print the pull request link
+```
+
+Run them from a clone of your copy. `origin` is where the branch is pushed. Pass `--into <branch>`
+when your default branch is not `main`, and `--upstream <url>` (or set `INTERBOX_UPSTREAM_URL`) to
+point at a mirror of the template.
+
+The base of the comparison is the newest upstream release your branch already contains, and the
+target is the newest release. The sync fetches upstream tags under `refs/interbox-upstream/tags/`,
+so it does not touch your own tags. It needs full history and refuses a shallow clone.
+
+The `upstream-sync` branch is a merge of the target into your branch. A conflict only in `bun.lock`
+is resolved by starting from upstream's lock and running `bun install --lockfile-only`, unless the
+merge also changes `.npmrc`, `bunfig.toml` or an `.env` file. A conflict only in the `version` line
+of `package.json` takes upstream's version. Any other conflict leaves the branch at the upstream
+release itself, so the pull request shows the conflicts and its description lists the commands
+that resolve them.
+
+A release with an **Upgrade Notes** section in its notes makes the pull request a draft titled
+`chore!:` and labelled `breaking-change`, with those notes listed. If the notes cannot be checked
+(they failed to load or the upstream is not on github.com), the pull request is a labelled draft
+with a warning. Once a later run reads them and finds nothing breaking, the label comes off and the
+description says the draft can be marked ready.
+
+When the target moves the engine version, the description says so. Move the image to that version
+or newer before merging, as above.
+
+Merge the pull request with a merge commit, not a squash or rebase, because the next sync uses
+that merge to find where the last one left off. If a sync pull request was squashed, the next
+scheduled run stops and says how to record the release in your history without changing a file,
+through a pull request if your branch is protected.
+
+If `upstream-sync` holds a commit the sync did not make, including the merge commit from GitHub's
+**Update branch** button or a sync commit someone amended, the sync does not reset it. Work on the
+release that the open pull request targets, such as resolving its conflicts, is left alone. When a
+newer release appears, the sync comments once on that pull request.
+Closing that pull request does not delete the branch. To move on, either merge it or close it and
+delete `upstream-sync`. Until then, a scheduled run with no open pull request opens an issue on
+GitHub or fails on Azure Pipelines. Otherwise, a pull request closed without merging is left alone
+until a newer release appears.
+
+### Scheduled runs
+
+The template ships daily jobs for GitHub Actions and Azure Pipelines that run the sync with the
+token each platform gives its runs. The template's README lists the repository
+settings they need. They install your copy's dependencies with
+`bun install --frozen-lockfile --ignore-scripts` and run
+`./node_modules/.bin/interbox workspace sync --platform ...`, so the CLI is the version your
+`bun.lock` pins and only moves when you merge a sync pull request.
+
+Some changes need a run by hand, with your own git credentials:
+
+- On GitHub the workflow token cannot push changes under `.github/workflows/`, and the sync does
+  not push changes under `.github/actions/` or to an `action.yml` anywhere with it either. When a
+  release touches any of them or the copy shares no history with the template, the workflow opens
+  an issue instead of a pull request.
+- On Azure Pipelines the pipeline does not push a release that changes a pipeline definition, and
+  it does not adopt a copy that shares no history with the template. A pipeline definition is
+  anything under `azure-pipelines/` or `.azure-pipelines/`, a root `azure-pipelines.yml`, and any
+  other YAML file outside `.github/` with a top-level `trigger`, `pr`, `schedules`, `stages`,
+  `jobs`, `steps`, `extends`, `variables`, `parameters` or `pool` key. A YAML file that does not
+  parse counts too. The run fails and says so.
+
+Run it by hand with a one-off command pinned to an exact version. The same command is a copy's
+first sync, before the copy has these jobs. The issue or the failed run prints it:
+
+```sh
+bunx @health-samurai/interbox@<version> workspace sync
+```
+
+It pushes the branch and prints the link that opens the pull request. When you run it locally,
+the sync also warns before pushing if the branch changes CI definitions. Once the branch is pushed
+by hand, scheduled runs on either platform open or update its pull request and leave the branch as
+it is. On Azure, delete that branch once its pull request completes: the pipeline can only rebuild
+a branch it created.
+
+### What the sync trusts
+
+CI on `upstream-sync` runs upstream code. Review the CI-definition changes that the description
+lists before merging.
+
+The sync regenerates the lockfile in an empty directory that holds only the merged `package.json`
+files, upstream's `bun.lock`, and the `.npmrc` and `bunfig.toml` committed on your branch. It reads
+no `.env` file, and any version it has to resolve must be at least three days old. An upstream
+change to `.npmrc`, `bunfig.toml` or an `.env` file stops the regeneration. A dependency that
+upstream's `package.json` gives as a URL or a git address is fetched from that address during the
+regeneration.
+
+A copy with no shared history, such as one made from a ZIP download, is adopted from its
+`package.json` `version`. The first commit records upstream history at the release that `version`
+names, without changing a file. A hand-edited version picks the wrong starting point and can
+silently skip upstream changes, so check it before the first sync. If the merge that follows
+conflicts, the branch holds only the adopt commit and the description says how to finish the
+merge.
+
 ## What happens on boot
 
 Every start — an update included — the container:
