@@ -16,7 +16,9 @@ cosign verify \
 ```
 
 A non-zero exit means the image was not produced by our release pipeline: do not
-deploy it. Releases older than this page are unsigned and fail this check.
+deploy it. Releases older than this page are unsigned and fail this check. So do most
+`edge` and `main-<sha>` images: they are development builds, and only release tags are
+guaranteed to be signed.
 
 The scan result is attested alongside the signature (`--type vuln`) and re-attested
 nightly for the current release and `edge`. Nightly re-attestations carry the `image-rescan.yml` identity, not `publish.yml`; to

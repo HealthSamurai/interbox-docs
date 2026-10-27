@@ -249,7 +249,10 @@ A reload loads the new workspace **first** and only swaps the running workers
 once it builds. A broken commit therefore leaves the previous pipeline running
 rather than taking the engine down, and the failure is reported in the
 dashboard: *"the workspace on `<ref>` failed to load, so the engine is still
-running the code it had"*, with the underlying error.
+running the code it had"*, with the underlying error. During the swap, listeners
+refuse new connections for up to the stop grace period
+(`INTERBOX_STOP_GRACE_MS`, see [Updating the Engine](updating.md)) while
+in-flight work finishes.
 
 ### Held updates
 

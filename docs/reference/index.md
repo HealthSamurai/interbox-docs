@@ -4,10 +4,13 @@
 
 | import | what it is |
 |---|---|
-| `@health-samurai/interbox` | the authoring surface: `pipeline`, `env`, `defineMapper`, error taxonomy (below) |
+| `@health-samurai/interbox` | `env`, the error taxonomy, `defineSystem`, `provenanceId` (below), and the 1.x pipeline DSL (see [1.x exports](#1x-exports)) |
+| `@health-samurai/interbox/chain` | the 2.0 pipeline DSL: `pipeline`, `defineStep`, `defineState`, `defineLookup`, `NotReady`, `postgresStore`, `defineSender`, `mllpSource`, `webhookSource`, the bridges and `ChainRegistry` — see [Steps](steps.md), [Sources](steps.md#sources-mllpsource-and-webhooksource) for the two sources, and [Reference lookups](steps.md#reference-lookups-definelookup-and-ctxlookup) for `defineLookup` and `NotReady` |
+| `@health-samurai/interbox/hl7v2` | generated HL7v2 domain model, parser and the `hl7v2Parser()` step — [/hl7v2](hl7v2.md) |
+| `@health-samurai/interbox/aidbox` | the `fhirItems()` and `skipUnchanged()` steps and the `aidbox()` sender — see [Steps](steps.md#aidbox-fhiritems-skipunchanged-and-aidbox) |
+| `@health-samurai/interbox/admin` | functions a workspace script reads and changes units with — see [Admin Scripts](../ops/admin-scripts.md) |
 | `@health-samurai/interbox/core` | shared stage contracts — rarely imported directly, see [/core](core.md) |
-| `@health-samurai/interbox/builtins` | typed descriptors for the engine's built-in stages — [/builtins](builtins.md) |
-| `@health-samurai/interbox/hl7v2` | generated HL7v2 domain model + parser — [/hl7v2](hl7v2.md) |
+| `@health-samurai/interbox/builtins` | typed descriptors for the engine's built-ins: the system connectors, and the 1.x stages — [/builtins](builtins.md) |
 | `@health-samurai/interbox/fhir` | FHIR R4 core types + profile helpers — [/fhir](fhir.md) |
 | `@health-samurai/interbox/fhir/4.0.1` | same, pinned to the 4.0.1 subpath explicitly |
 | `@health-samurai/interbox/fhir/4.0.1/profiles` | generated profile classes |
@@ -17,28 +20,25 @@
 
 ### Pipeline authoring — see [Pipelines](../concepts/pipelines.md)
 
-```ts
-// creates AND registers the pipeline; chain .source()/.mapper()/.sender()
-function pipeline(name: string): PipelineBuilder;
+A 2.0 pipeline is declared with `pipeline` from `@health-samurai/interbox/chain`,
+not with the root's. The engine reads the pipelines from the `ChainRegistry`
+the workspace's `src/index.ts` exports, from `SystemRegistry` the systems it
+declares, and from `LookupRegistry` the
+[reference lookups](steps.md#reference-lookups-definelookup-and-ctxlookup) its
+steps may use:
 
-const PipelineRegistry: {
-  SDK_VERSION: string;
-  pipelines: Map<string, PipelineDecl>;
-  register(p: PipelineDecl): void;          // throws on a duplicate name
-  get(name: string): PipelineDecl | undefined;
-  getAll(): PipelineDecl[];
-  clear(): void;                            // test-only
-};
+```ts
+export { ChainRegistry } from "@health-samurai/interbox/chain";
+export { SystemRegistry } from "@health-samurai/interbox";
+export const LookupRegistry = { providers };
 ```
 
-The declaration types (`PipelineDecl`, `SourceDecl`, `MapperDecl`,
-`SenderDecl`) and the descriptor types (`SourceDescriptor`,
-`ConfiguredSource`, `SenderDescriptor`, `ConfiguredSender`,
-`ParserDescriptor`, `ConfiguredParser`) are also exported. You rarely write
-these by hand — calling `mllpSource(...)` / `aidboxSender(...)` /
-`hl7v2Parser(...)` produces correctly-typed values (see
-[/builtins](builtins.md)); the decl shapes are shown in
-[Pipelines → What gets stored](../concepts/pipelines.md#what-gets-stored).
+`LookupRegistry` is optional, and is a plain object of your own whose values
+are the handles `defineLookup` returned; anything else in it fails the load.
+
+A workspace whose entry does not export `ChainRegistry` fails to load. The
+root's own `pipeline` and `PipelineRegistry` are the 1.x DSL — see
+[1.x exports](#1x-exports).
 
 ### `SDK_VERSION`
 
@@ -46,8 +46,10 @@ these by hand — calling `mllpSource(...)` / `aidboxSender(...)` /
 const SDK_VERSION: string; // sourced from this package's own package.json
 ```
 
-Carried into the workspace bundle via `PipelineRegistry.SDK_VERSION` so the
-engine can check compatibility at load time.
+The version an engine runs is shown on the dashboard's Instances page. The 2.0
+engine does not compare it with the workspace's: `ChainRegistry` carries no
+version, and a workspace written for 1.x fails to load because it registers
+pipelines or mappers with the 1.x DSL.
 
 ### Env — see [Env & Config](../concepts/env-and-config.md)
 
@@ -76,38 +78,53 @@ const ERROR_GROUPS: readonly [
   "type",
   "code",
   "unsupported",
+  "source",
+  "mapper",
+  "system",
+  "sender",
   "internal",
 ];
 
 type ErrorGroup = (typeof ERROR_GROUPS)[number];
 ```
 
-### Mapper authoring — see [Mapper authoring](mapper.md)
+### Systems — see [Systems](../concepts/systems.md)
+
+`defineSystem` declares an external API a step calls, and `SystemRegistry` is
+what the workspace exports so the engine can bind it.
+
+### `provenanceId` — see [Steps](steps.md#ctxsource-and-provenanceid)
 
 ```ts
-function defineMapper<K extends ParserType, Cfg = unknown, Out = unknown>(
-  spec: MapperSpec<K, Cfg, Out>,
-): MapperDescriptor<K, Cfg>;
-
-const MapperRegistry: {
-  mappers: Map<string, MapperDefinition>;
-  register(def: MapperDefinition): void;
-  get(type: string): MapperDefinition | undefined;
-  getAll(): MapperDefinition[];
-  clear(): void;
-};
+function provenanceId(unit: { readonly id: bigint; readonly createdAt: Date }): string;
 ```
 
-plus [`provenanceFor`](mapper.md#provenancefor--a-fhir-provenance-for-what-a-mapper-produced)
-and the re-exported types `ConfiguredMapper`, `MappedCode`, `MapperContext`,
-`MapperDefinition`, `MapperDescriptor`, `MapperSource`, `ParserOutputMap`,
-`ParserType`.
+A `Provenance` id derived from a unit, `ib-<unit id>-<created time in base-36
+milliseconds>`. A Retry of the unit gives the same id.
+
+## 1.x exports
+
+**The 2.0 engine runs none of what this section describes.** The root still
+exports the 1.x pipeline DSL — `pipeline`, `PipelineRegistry`, `defineMapper`,
+`MapperRegistry`, `provenanceFor`, `defineSource`, `SourceRegistry`,
+`definePreprocessor`, `PreprocessorRegistry`, `defineParser`, `ParserRegistry`,
+`defineInboundTable`, `InboundTableRegistry`, their declaration and descriptor
+types, and the payload helpers below — but the 2.0 engine loads only the
+pipelines in `ChainRegistry`. A workspace that registers a pipeline with the
+root's `pipeline()` or a mapper with `defineMapper` is refused: the 2.0 engine
+does not load it, and the failure names each one. A 2.0 pipeline's source is MLLP (`mllpSource`),
+HTTP (`webhookSource`) or another pipeline (`fromPipeline`), all from
+`@health-samurai/interbox/chain`. A pipeline that needs any other source, an
+SFTP drop or a source you define with `defineSource`, stays on a 1.x engine
+for now.
 
 ### Sources
 
-A source you define with `defineSource` receives a `SourceContext`: `writeBatch`
-to hand messages to the pipeline, `state` to remember what it has already taken,
-and [`preprocess`](#preprocessing-what-a-source-read) to split or unpack bytes it
+On 1.x, a source you define with `defineSource` receives a `SourceContext`:
+`writeBatch` to hand messages to the pipeline, `state` to remember what it has
+already taken — the 1.x source's own store, not 2.0's
+[pipeline state](steps.md#state-definestate-and-ctxstate) — and
+[`preprocess`](#preprocessing-what-a-source-read) to split or unpack bytes it
 read. The source reads its input itself — a directory, an HTTP endpoint, a
 queue — with whatever client suits it. A source logs with `console`, like every
 stage — see [Logging](#logging):
@@ -358,9 +375,10 @@ it reads a file.
 
 ## Logging
 
-Every stage logs with `console` — a source, a mapper, a sender alike. There is
-no logger to import and none on a stage's context. Each stage runs in its own
-worker thread, and the engine captures that thread's `console.log`, `info`,
+Workspace code logs with `console`: a 2.0 pipeline's steps and sender, and a
+1.x source, mapper or sender alike. There is no logger to import and none on a
+stage's context. Each stage runs in its own worker thread, and the engine
+captures that thread's `console.log`, `info`,
 `warn`, `error`, `debug` and `trace` as JSON log lines, in the same stream as
 the engine's own:
 
@@ -378,9 +396,13 @@ Every line carries the identity of the stage that wrote it:
 
 | stage | fields |
 |---|---|
-| source | `stage: "source"`, `source` (its id), `type` (its source type) |
-| mapper | `stage: "mapper"`, `mapper` (its type) |
-| sender | `stage: "sender"`, `sender` (its type) |
+| 2.0 source, which runs the steps before the store | `stage: "chain-source"`, `pipeline` (its name), `instance` (the engine's `INTERBOX_INSTANCE_ID`, or its host name) |
+| 2.0 segment, which runs the steps after the store | `stage: "chain-segment"`, `pipeline`, `instance` |
+| 2.0 sender | `stage: "chain-sender"`, `pipeline`, `instance` |
+| 2.0 webhook dispatcher | `stage: "chain-webhook-dispatcher"` |
+| 1.x source | `stage: "source"`, `source` (its id), `type` (its source type) |
+| 1.x mapper | `stage: "mapper"`, `mapper` (its type) |
+| 1.x sender | `stage: "sender"`, `sender` (its type) |
 
 A field of yours with one of those names is dropped and the stage's own value
 stands, so a line cannot claim to come from another stage.

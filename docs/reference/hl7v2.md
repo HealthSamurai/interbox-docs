@@ -27,7 +27,7 @@ day-to-day reference.
   `HL7v2Message = HL7v2Segment[]`, and `getComponent(field, ...path)` for
   walking into a field's components.
 - **`fields`** — generated per-segment field accessors (e.g. `fromPID`,
-  `fromMSH`) and datatype interfaces, so a mapper reads a segment's fields by
+  `fromMSH`) and datatype interfaces, so a step reads a segment's fields by
   name instead of numeric index.
 - **`tables`** — generated HL7v2 coded-value tables (HL7 table 0001, 0004,
   …), importable as typed constants.

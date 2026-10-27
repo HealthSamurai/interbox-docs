@@ -836,15 +836,38 @@ conversations that session started; [revoking every session](#what-a-session-is)
 revokes every one of them. Both take effect immediately, and neither needs a
 restart or a change to the deployment's configuration.
 
-What a grant reaches is not nothing. Read access to messages and their FHIR
-output — that is PHI — plus three writes: `POST /api/repository/pull` (updates the
-workspace checkout and reloads the engine), `POST /api/concept-maps/:map/entries`
-(rewrites clinical code translation) and `POST /api/messages/retry` and `/defer`
-(re-queues messages, including ones already delivered).
+What a grant reaches is not nothing. It reads message content, and that is PHI:
+messages and their FHIR output and, on Interbox 2.0, each pipeline's units —
+their attributes and error messages, each unit's stored value, and the payload of
+each of its items that is waiting to be sent or was rejected. It also writes: it
+can update the workspace checkout, rewrite clinical code translation, and Retry
+and Defer both messages and 2.0 units.
 
-What it reaches is eleven route shapes, matched by method and path, and nothing
-outside them: no SQL console, no workspace actions, no repository file writes and
-no assistant route.
+What it reaches is seventeen route shapes, matched by method and path, and
+nothing outside them. Eleven read:
+
+- `GET /api/messages`, `GET /api/messages/:id` and `GET /api/messages/:id/fhir`
+- `GET /api/stats/error-kinds`, `GET /api/unmapped-codes` and
+  `GET /api/terminology/loinc`
+- `GET /api/repository`
+- `GET /api/pipelines` and `GET /api/pipelines/:name/units`
+- `GET /api/units/:id` (the unit with its stored value) and
+  `GET /api/units/:id/items/:itemId` (the item, with its payload while it waits
+  and, once it has finished, only if it was rejected)
+
+Six write:
+
+- `POST /api/repository/pull` — updates the workspace checkout and reloads the
+  engine
+- `POST /api/concept-maps/:map/entries` — rewrites clinical code translation
+- `POST /api/messages/retry` and `POST /api/messages/defer` — re-queue messages,
+  including ones already delivered
+- `POST /api/pipelines/:name/units/retry` and
+  `POST /api/pipelines/:name/units/defer` — Retry or Defer 2.0 units, up to 1000
+  per request; a Retry re-queues a unit already sent, too
+
+Nothing else: no SQL console, no workspace actions, no repository file writes, no
+deleting a 2.0 unit's items, and no assistant route.
 
 What this does **not** do is stop a crafted message from reaching the agent, or
 stop the agent from acting within the routes it can already reach. It bounds what
@@ -860,8 +883,9 @@ means it works from inside the dashboard assistant, where that credential is
 already in the environment under `INTERBOX_SERVICE_TOKEN`. Setting that variable
 by hand to a value of your own does not work: the API knows no such credential and
 answers `401`. The tool still refuses to send what it has to a plain-`http`
-`INTERBOX_API_URL` that is not loopback, since that would put a live credential on
-the network in cleartext.
+`INTERBOX_API_URL` whose host is not a loopback address — `localhost`, an IPv4
+address in `127.0.0.0/8` or `[::1]`, and no other name, however it resolves —
+since that would put a live credential on the network in cleartext.
 
 Every request made with a grant is written to the log — the method, the path, and
 the session the grant belongs to — so you can tell afterwards what was read.

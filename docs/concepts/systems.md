@@ -1,14 +1,15 @@
-# Systems: calling an external API from a stage
+# Systems: calling an external API from a step
 
-A **system** is an API a stage calls while doing its own work — a FHIR server it
-reads a patient from, say. It is not a stage: nothing flows through it, and it
+A **system** is an API a step calls while doing its own work — a FHIR server it
+reads a patient from, say. It is not a step: nothing flows through it, and it
 appears nowhere in a pipeline.
 
-This exists because a mapper can otherwise reach exactly two things beyond its
-input: terminology, and its own config. Everything else about a message has to
-already be in the message. An ADT carries an MRN; the resource you want may need
-demographics, coverage, or an identifier the EHR assigns — and the stage that runs
-after mapping, the sender, can only write.
+This exists because a step can otherwise reach only what its context offers
+beyond its input: terminology, and its pipeline's own state and units.
+Everything else about a message has to already be in the message. An ADT
+carries an MRN; the resource you want may need demographics, coverage, or an
+identifier the EHR assigns — and the sender, which runs after the steps, only
+delivers.
 
 ## Declaring one
 
@@ -33,11 +34,18 @@ export const ehr = defineSystem(fhirSystem, {
 });
 ```
 
-Not on a pipeline, deliberately. A `pipeline()` is an authoring grouping rather
-than runtime isolation — stages route by parser to an inbound table, never by
-pipeline — so a credential scoped to one would read as an isolation guarantee the
-runtime cannot keep. Declaration-site scope is lexical and honest: the system a
-stage uses is the one it imports.
+Not on a pipeline: the system a step uses is the one it imports, and the steps of
+any pipeline may import it. A workspace that declares systems exports
+`SystemRegistry` from its `src/index.ts` beside `ChainRegistry`, so the engine
+can bind them:
+
+```ts
+export { ChainRegistry } from "@health-samurai/interbox/chain";
+export { SystemRegistry } from "@health-samurai/interbox";
+```
+
+Steps on both sides of the store can call a system. A sender's `run` cannot:
+systems are not bound where senders run.
 
 `id` names the declaration. It prefixes every error message the system produces,
 so pick something an operator will recognise in an error queue.
@@ -65,8 +73,8 @@ not a lesser client — it is the same client — and everything below holds for
   a create, and systems do not write
 - redirects are not followed, so a gateway answering `302 → /login` classifies as
   the transient status it is instead of becoming an opaque HTML `200`
-- every call has a deadline, so a hung socket cannot hold a mapper's transaction
-  open indefinitely
+- every call has a deadline, so a hung socket fails the call instead of holding
+  up the step until the engine gives up on it
 
 What `fhirSystem` does **not** promise is capability: that a given call is the
 right shape for your server, that an operation exists there, or that its error
@@ -107,45 +115,52 @@ EPIC_SUPPORT.matchPatient; // "supported"
 
 Every method is a read, and that is a contract rather than an omission.
 
-The dashboard's **Retry** re-parses and re-maps the stored raw message. A read is
-idempotent under that; a write is not. So there is no `request(method, …)`, and
-the single `POST` on the surface can only address a `$operation` path — a POST to
-a bare resource path would be a create, and the client refuses to compose one.
+Steps run again: a **Retry** runs every step after the store again, and a step
+before the store runs again whenever the sending side resends its input. A read
+is idempotent under that; a write is not. So there is no `request(method, …)`,
+and the single `POST` on the surface can only address a `$operation` path — a
+POST to a bare resource path would be a create, and the client refuses to
+compose one.
 
 Writes belong in a sender.
 
-## Calling one from a mapper
+## Calling one from a step
 
-Use `mapBatch`, and return failures **in their slot** rather than throwing:
+Use `mapAll`, and return failures **in their slot** rather than throwing:
 
 ```ts
-import { defineMapper, mapWithConcurrency } from "@health-samurai/interbox";
+import { domainError, mapWithConcurrency } from "@health-samurai/interbox";
+import { defineStep, type Batch } from "@health-samurai/interbox/chain";
+import type { HL7v2Message } from "@health-samurai/interbox/hl7v2";
 import { ehr } from "../systems/ehr";
 
-export const adtMapper = defineMapper({
-  type: "adt",
-  parser: hl7v2Parser,
-  async mapBatch(cfg, items, ctx) {
-    // Fan-out is yours. The client neither queues nor schedules, so the number of
-    // concurrent calls is the number you asked for.
-    const found = await mapWithConcurrency(items, 8, (i) =>
-      ehr.findPatientByIdentifier(cfg.mrnSystem, mrnOf(i.input)),
-    );
+const MRN_SYSTEM = "https://ehr.example.com/mrn";
 
-    return items.map((item, n) => {
-      const page = found[n];
-      // Returned, not thrown: this fails THIS message. Throwing out of mapBatch
-      // fails the whole claim.
-      if (page instanceof Error) return page;
-
-      const [patient, ...rest] = page.resources;
-      if (!patient) return new Error("no patient for this message");
-      if (rest.length) return new Error(`ambiguous: ${rest.length + 1} candidates`);
-      return buildBundle(item, patient);
+export const withPatient = defineStep("with-patient", (msgs: Batch<HL7v2Message>) =>
+  msgs.mapAll(async (rows) => {
+    const found = await mapWithConcurrency(rows, 8, async (msg) => ({
+      msg,
+      page: await ehr.findPatientByIdentifier(MRN_SYSTEM, mrnOf(msg)),
+    }));
+    return found.map((hit) => {
+      if (hit instanceof Error) return hit;
+      const [patient, ...rest] = hit.page.resources;
+      if (!patient) return domainError("system", "patient_not_found", "no patient for this message's MRN");
+      if (rest.length > 0) return domainError("system", "patient_ambiguous", `${rest.length + 1} patients match this message's MRN`);
+      return { msg: hit.msg, patient };
     });
-  },
-});
+  }),
+);
 ```
+
+Fan-out is yours: the client neither queues nor schedules, so the number of
+concurrent calls is the number you pass to `mapWithConcurrency`, which answers a
+failed call with its `Error` in that row's place. An `Error` returned in a row's
+place fails only that row's unit, and is classified like a throw: a
+`domainError`, or a system's `_rejected` error or one of its variants, ends the
+unit at `error` at once with its kind; a system's `_unreachable` error, or any
+other `Error`, is tried again (see [Errors](#errors)). A throw out of `mapAll`
+fails every unit in the call.
 
 Two things that bite:
 
@@ -163,20 +178,29 @@ requests.
 
 ### The ceiling, and it is a real one
 
-A mapper's calls happen **inside its drain transaction**, which claims up to **100
-messages** and holds their row locks for the whole cycle. So the worst case is
-arithmetic:
+After the store, a step's calls run inside the **take's deadline**: 60 seconds
+for all the work on a take of up to the store's `batch` units, **100** by
+default. So the worst case is arithmetic:
 
 ```
-open transaction  ≈  ceil(100 / concurrency) × timeoutMs
+time the take needs  ≈  ceil(batch / concurrency) × timeoutMs
 ```
 
-At the default `timeoutMs` of 10s and a concurrency of 4, a claim where every call
-times out holds that transaction for **over four minutes**. Nothing cuts it short.
+At the default `timeoutMs` of 10s and a concurrency of 4, a take where every call
+times out needs **over four minutes**, far past its deadline. The engine stops
+waiting at 60 seconds: every unit of the take counts a failed attempt and is
+taken alone from then on, and a unit that keeps failing ends at `error` with
+`engine/step_timeout` after five attempts.
 
-So set both knobs deliberately. `timeoutMs: 3_000` with a concurrency of 8 bounds
-the same worst case to about 40 seconds. Prefer one batched call over one call per
-message wherever the API allows it.
+So set both knobs deliberately, and the store's `batch` with them.
+`timeoutMs: 3_000` with a concurrency of 8 bounds a take of 100 to about 40
+seconds. Prefer one batched call over one call per message wherever the API
+allows it.
+
+Before the store, a step's calls run inside the transaction that stores the
+input, and the sending side waits for its answer until they finish. A slow call
+there can make the sender give up and resend; keep such calls short, or make
+them after the store.
 
 ## Configuration
 
@@ -203,14 +227,34 @@ it for a single uploaded certificate.
 
 ## Errors
 
-A failed call classifies itself, and the mapper records it. The group is `system`,
-the specific names the connector — `system/epic_unreachable`,
+A failed call classifies itself in its error's kind. The group is `system`, the
+specific names the connector — `system/epic_unreachable`,
 `system/aidbox_rejected` — so a read that failed is never confused with a write
 that failed, which is `sender/…`. See [errors](./errors.md).
 
-Transient and permanent are decided on the same status rule the senders use: 5xx,
-408, 425, 429 and 3xx are transient; everything else is permanent. A call that
-never got an answer at all — DNS, refused connection, TLS — is transient too.
+Whether the kind says `_unreachable` or `_rejected` is decided on the same status
+rule the senders use: 5xx, 408, 425, 429 and 3xx are `_unreachable`; everything
+else is `_rejected` or one of its variants. A call that never got an answer at
+all — DNS, refused connection, TLS — is `_unreachable` too.
+
+After the store, a step that lets the error through fails its unit by that kind:
+
+- **`_unreachable` is transient.** The unit stays at the store and is tried
+  again 4 seconds later, then 8, 16 and 32, as after any other throw. A fifth
+  failure ends it at `error` with `engine/attempts_exhausted`, and a message
+  that begins with the system's kind: `system/epic_unreachable: …`.
+- **`_rejected`, and each of its variants, is permanent.** The unit ends at
+  `error` at once with that kind, as after a `domainError`, and is not tried
+  again on its own.
+
+A step that turns the system's answer into a failure of its own — no patient
+found, or more than one — throws a `domainError`, and its unit ends at `error`
+at once with that error's kind. Before the store, the input is refused, as any
+throw there refuses it.
+
+A system that stays down past the fifth attempt leaves its units at
+`engine/attempts_exhausted`. Once it is back, filter the Units page on that
+`error_kind` and the step's `error_step`, and retry those units.
 
 Where a server explains itself in an `OperationOutcome`, its `diagnostics` are
 carried into the message. Read them: they are usually the answer.
@@ -239,14 +283,14 @@ the OID differs per site, and matching on the type text will break at the next
 deployment.
 
 ```ts
-const mrn = patient.identifier?.find((i) => i.system === cfg.mrnSystem)?.value;
+const mrn = patient.identifier?.find((i) => i.system === MRN_SYSTEM)?.value;
 ```
 
 **`matchPatient` already returns the full Patient**, identifiers and demographics
 together, so there is no second `read` to make. Use `search` when you need
 clinical data, keyed on `patient.id` — the FHIR id, not the MRN.
 
-## Testing a mapper that uses a system
+## Testing a step that uses a system
 
 Bind a fake. No network, no credentials:
 

@@ -10,14 +10,14 @@ few that default to a public host can be pointed inside too.
 | Destination | Port | Used for | When | Setting |
 |---|---|---|---|---|
 | PostgreSQL | from `DATABASE_URL`, usually 5432 | All Interbox state. At start the engine also creates its database and applies migrations. | Always | `DATABASE_URL` |
-| Aidbox | from the URL | The Aidbox sender; health and licence status on the dashboard; the assistant's Aidbox queries | Whenever a pipeline sends; every few seconds while a dashboard tab is open; when the assistant queries Aidbox | The `url` the workspace passes to `aidboxSender`, by convention `env("AIDBOX_URL")`; `AIDBOX_URL` for the dashboard and the assistant |
+| Aidbox | from the URL | The Aidbox sender; health and licence status on the dashboard; the assistant's Aidbox queries | Whenever a pipeline sends; every few seconds while a dashboard tab is open; when the assistant queries Aidbox | The `url` the workspace passes to `aidbox()`, by convention `env("AIDBOX_URL")`; `AIDBOX_URL` for the dashboard and the assistant |
 | Workspace git remote | from the URL: SSH 22 or HTTPS 443 | Clone, fetch on reload, `git ls-remote` to notice a moved ref. The Repository screen lists branches and loads older history. Push only at `INTERBOX_WORKSPACE_ACCESS=push` or `apply`. | At start, on every reload, every `INTERBOX_WORKSPACE_POLL_MS` (30 s by default; the Helm chart sets 5 s) | `INTERBOX_WORKSPACE_GIT_URL` |
 | npm registry, `registry.npmjs.org` by default | HTTPS 443 | `bun install` of the workspace's dependencies | Clone mode: at start and on every reload. A workspace mounted at `/workspace`: every container start. | `BUN_CONFIG_REGISTRY` or `NPM_CONFIG_REGISTRY`, or the workspace's own `.npmrc` / `bunfig.toml` |
 | Terminology server, `https://tx.fhir.org/r4` by default | HTTPS 443 | LOINC `$expand` and `$lookup` | When someone searches LOINC on the dashboard, or the dashboard assistant looks a code up | `TERMINOLOGY_URL`; `TERMINOLOGY_AUTH` is sent as the `Authorization` header as written |
 | Licence portal, `aidbox.app` | HTTPS 443 | After "Activate" on the dashboard: exchanges the sign-in code and requests a development licence | Only when someone activates | Supply the licence in `INTERBOX_LICENSE` and this is never called |
 | Your OIDC identity provider | HTTPS 443 | Discovery, signing keys, token, userinfo | Discovery on the first sign-in after start, the rest on sign-ins | `INTERBOX_AUTH_ISSUER` — see [Securing Dashboard Access](secure-access.md) |
 | Model API for the dashboard assistant, `api.anthropic.com` by default | HTTPS 443 | The assistant | The agent starts when someone opens the assistant panel, and calls the model on every prompt | `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` |
-| Endpoints the workspace declares | from the workspace's config | FHIR systems (generic, Aidbox, Epic, Paragon) and their token endpoints, SFTP sources, outbound webhooks | Whenever a pipeline uses them | Workspace code. A webhook is only sent to a host listed in `WEBHOOK_EGRESS_ALLOWLIST` — see [Webhooks](../concepts/webhooks.md). |
+| Endpoints the workspace declares | from the workspace's config | FHIR systems (generic, Aidbox, Epic, Paragon) and their token endpoints, outbound webhooks | Whenever a pipeline uses them | Workspace code. A webhook is only sent to a host listed in `WEBHOOK_EGRESS_ALLOWLIST` — see [Webhooks](../concepts/webhooks.md). |
 | DNS | UDP and TCP 53 | Name resolution | Always | — |
 
 The node, not the pod, pulls the image: `healthsamurai/interbox` from Docker Hub.
@@ -92,8 +92,8 @@ exception is licence activation: the licence request carries page metadata
 flagged for tracking. It makes no call to the Kubernetes API (the chart sets
 `automountServiceAccountToken: false`) and downloads no FHIR packages at runtime.
 
-Code in the workspace runs inside Interbox: mappers, custom stages, dashboard
-actions and, in clone mode, install scripts. It can call anything it is written
+Code in the workspace runs inside Interbox: steps, senders, dashboard actions
+and, in clone mode, install scripts. It can call anything it is written
 to call, so review it as part of the same exercise.
 
 ## Inbound

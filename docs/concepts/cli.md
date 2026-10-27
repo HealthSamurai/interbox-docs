@@ -36,13 +36,15 @@ See [Track upstream workspace releases](../ops/updating.md#track-upstream-worksp
 
 ## The `assistant` namespace
 
-The CLI also has an `interbox assistant …` namespace of read-only and
-dry-run subcommands (spec lookups, message parsing, error-queue access).
+The CLI also has an `interbox assistant …` namespace of subcommands: spec
+lookups, message parsing and error-queue access. Most only read; `errors retry`,
+`errors defer`, `errors resolve`, `errors triage --apply-safe` and `reload`
+change what the deployment holds or runs.
 These exist as tooling for the bundled AI skills and the dashboard's
 assistant — they're not part of the workspace-authoring workflow this book
 documents. The human-facing equivalents are the dashboard (error queue,
-message inspection, "Simulate message") and your editor working against the
-SDK's generated types.
+message inspection) and your editor working against the SDK's generated
+types.
 
 ## Reaching a dashboard that requires a sign-in
 
@@ -55,5 +57,6 @@ by hand is not a credential the API knows, and every command fails with a `401`.
 
 A grant reaches only the routes the CLI calls — see
 [Securing Dashboard Access](../ops/secure-access.md). The CLI refuses to send it
-to a plain-`http` `INTERBOX_API_URL` that is not loopback, since that would put
-the credential on the network in cleartext.
+to a plain-`http` `INTERBOX_API_URL` whose host is not `localhost`, an IPv4
+address in `127.0.0.0/8` or `[::1]`, since that would put the credential on the
+network in cleartext.

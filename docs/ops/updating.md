@@ -17,6 +17,11 @@ top of its release under **Upgrade Notes**.
 > up on its own by re-cloning and rebuilding — no image change. See
 > [Getting Started](../getting-started.md).
 
+> Moving a **1.x installation to 2.0** is a cutover of its own: the workspace is
+> rewritten, and a one-off script moves the 1.x message history and Aidbox
+> fingerprints into a 2.0 pipeline while every engine is stopped. Follow
+> [Upgrading from 1.x](upgrade-from-1x.md) for it.
+
 ## Move the image tag
 
 The image tag *is* the engine version. Pre-GA the default is the moving `edge`
@@ -49,14 +54,34 @@ pin, `pullPolicy`) live in the
 
 ## Keep the workspace SDK compatible
 
-This is the one update step unique to Interbox. At boot the engine loads your
-workspace and **refuses to start if the workspace was built against an
-incompatible SDK** — before it runs any pipeline, so you get a clear error up
-front instead of a confusing failure deeper in.
-
-Compatible means the **same npm caret (`^`) bucket**: the same major version, or
+This is the one update step unique to Interbox. Keep the workspace's SDK in the
+**same npm caret (`^`) bucket** as the engine image: the same major version, or
 — while on `0.x` — the same minor. So `1.3.0` ↔ `1.9.2` are compatible; `1.x` ↔
 `2.x`, or `0.4` ↔ `0.5`, are not.
+
+**The 2.0 engine does not check this for you.** It loads the pipelines from the
+`ChainRegistry` your workspace's entry exports, and compares no version:
+`ChainRegistry` carries none. The engine's own version is shown on the
+dashboard's Instances page. A workspace written for 1.x, whose pipelines and
+mappers come from the package root's `pipeline()` and `defineMapper`, fails to
+load with a message that names each of them:
+
+```text
+the workspace registers pipeline "adt" and mapper "v2-to-fhir" with the 1.x DSL,
+the package root's `pipeline()` and `defineMapper`, which this 2.0 engine does
+not run: it runs only chain pipelines, declared with `pipeline` from
+"@health-samurai/interbox/chain" and exported from the workspace entry as
+`ChainRegistry`. See concepts/pipelines.md
+```
+
+So does a workspace that already exports `ChainRegistry` but still declares a
+pipeline or a mapper the 1.x way. Rewrite them in the chain DSL, as
+[Pipelines](../concepts/pipelines.md) describes, before you move to 2.0, and see
+[Upgrading from 1.x](upgrade-from-1x.md) for the rest of that move.
+
+A workspace that fails to load at boot leaves the engine parked: the API and
+the dashboard come up, and no pipeline runs. One that fails on a reload leaves
+the pipelines already running in place.
 
 Within a compatible bucket (a patch or minor bump on `1.x`) the workspace needs
 no change — just move the image tag. When you cross the boundary, align the
@@ -72,16 +97,6 @@ The template's `bun.lock` needs Bun 1.4 or newer for that `bun install`; see
 
 `interbox pin` with no argument reads `$INTERBOX_VERSION`, so one variable can
 pin both the image tag and the SDK dependency — see [CLI](../concepts/cli.md).
-
-You will know you got it wrong because the engine stops at boot with a message
-like:
-
-```text
-engine/SDK version mismatch: this workspace is built against
-@health-samurai/interbox 1.3.0, but this engine ships 2.0.0. They must share
-the same major version (or the same minor while 0.x). Run `interbox pin 2.0.0`
-and reinstall, or set INTERBOX_VERSION to an image matching SDK 1.3.0.
-```
 
 ## Track upstream workspace releases
 
@@ -209,13 +224,33 @@ Every start — an update included — the container:
 1. ensures its `interbox` database exists (unless you've told it the database is
    pre-created);
 2. applies any new **migrations** — idempotent, and forward-only;
-3. builds the workspace bundle and runs the SDK compatibility check above;
+3. builds the workspace bundle and loads the pipelines its `ChainRegistry`
+   declares;
 4. starts the engine and API.
+
+A 2.0 engine that finds rows left in the 1.x tables `interbox.hl7v2_in` or
+`interbox.resource_hash` logs a warning naming `bun scripts/import-1x.ts`: 2.0
+does not process them. See [Upgrading from 1.x](upgrade-from-1x.md).
 
 Because deployments run a single replica with a `Recreate` rollout, an update is
 a brief full stop-then-start, not a rolling one. MLLP senders reconnect and
-retry once the listener is back, and in-flight messages get the termination
-grace period to persist and ACK.
+retry once the listener is back, and in-flight messages get the engine's stop
+grace period, described below, to persist and ACK.
+
+On a stop the engine takes no new work and gives what it has started a grace
+period to finish: 10 seconds by default, set in milliseconds by
+`INTERBOX_STOP_GRACE_MS`. Work still running when it ends is abandoned without
+counting as a failed attempt, and is picked up again after the restart. A
+worker stuck in a long synchronous step cannot be interrupted: it is killed
+instead, and its work counts one failed attempt.
+
+The engine's whole stop takes the grace period, then a 2-second margin for
+workers to release what they hold, then up to 1 second to close them. So the
+orchestrator's termination grace period (`terminationGracePeriodSeconds` in
+Kubernetes, `stop_grace_period` in Docker Compose) must exceed
+`INTERBOX_STOP_GRACE_MS` plus about 5 seconds: at least 15 seconds with the
+default. Shorter, and the engine is killed before it has released what it
+held.
 
 ## Rolling back
 
@@ -232,3 +267,6 @@ expect. So:
   same-series revert), or restore the database from backup alongside it.
 - Test upgrades in staging first — especially across a major version, where the
   workspace SDK moves too.
+- After a 1.x import, a 1.x image no longer sees the moved rows: going back to
+  1.x means restoring the backup taken before the cutover. See
+  [Upgrading from 1.x](upgrade-from-1x.md#rolling-back).

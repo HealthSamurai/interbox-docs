@@ -1,5 +1,14 @@
 # `/builtins`
 
+**On 2.0, only the system descriptors here apply.** The source, preprocessor,
+parser and sender descriptors on this page belong to the 1.x pipeline DSL, and
+the 2.0 engine does not run them. A 2.0 pipeline takes `mllpSource` and
+`webhookSource` from `@health-samurai/interbox/chain` — see
+[Sources](steps.md#sources-mllpsource-and-webhooksource) — parses HL7v2 with
+the `hl7v2Parser()` step from `@health-samurai/interbox/hl7v2`, and delivers to
+Aidbox with `aidbox()` from `@health-samurai/interbox/aidbox` — see
+[Steps](steps.md). It has no SFTP source and no preprocessors.
+
 ```ts
 import {
   mllpSource,
@@ -19,16 +28,16 @@ import {
 } from "@health-samurai/interbox/builtins";
 ```
 
-Typed handles for the engine's built-ins, grouped by kind. A pipeline references
-the stage descriptors by value; each config is co-located with its descriptor. The
-engine owns the implementations and resolves them by `type` at runtime — see
-[Stages](../concepts/stages.md).
+Typed handles for the engine's built-ins, grouped by kind. **On 1.x**, a
+pipeline references the stage descriptors by value; each config is co-located
+with its descriptor, and the engine owns the implementations and resolves them
+by `type` at runtime.
 
 The **system** descriptors at the bottom are not stages. A pipeline never
-references them; a stage imports the handle `defineSystem` returned and calls it —
+references them; a step imports the handle `defineSystem` returned and calls it —
 see [Systems](../concepts/systems.md).
 
-## `mllpSource` — MLLP TCP listener source
+## 1.x: `mllpSource` — MLLP TCP listener source
 
 ```ts
 interface MllpSourceConfig {
@@ -47,7 +56,7 @@ mllpSource({
 });
 ```
 
-## `sftpSource` — SFTP polling source (read-only)
+## 1.x: `sftpSource` — SFTP polling source (read-only)
 
 ```ts
 interface SftpSourceConfig {
@@ -373,7 +382,7 @@ down with its restart count and last error — a wrong password and an
 unreachable host look the same there, so read the error text. A stalled
 server surfaces as a timeout, never as a silent hang.
 
-## `webhookSource` — HTTP webhook source
+## 1.x: `webhookSource` — HTTP webhook source
 
 ```ts
 interface WebhookSourceConfig {
@@ -411,7 +420,7 @@ destination and creating it again.
 
 Not to be confused with [webhooks](../concepts/webhooks.md), which Interbox sends out.
 
-## `ccdaParser` — C-CDA document parser
+## 1.x: `ccdaParser` — C-CDA document parser
 
 ```ts
 interface CcdaParserConfig {}   // no options yet
@@ -425,19 +434,26 @@ ccdaParser()
 ```
 
 Mapping to FHIR is yours to write. `@health-samurai/interbox/ccda` exports
-`toFhirBundle`, which turns the parsed document into a FHIR R4 `Bundle`:
+`parseCda`, which parses the document, and `toFhirBundle`, which turns the
+parsed document into a FHIR R4 `Bundle`. A 2.0 pipeline has no parser stage, so
+one step after the store does both:
 
 ```ts
-import { toFhirBundle } from "@health-samurai/interbox/ccda";
+import { defineStep, type Batch } from "@health-samurai/interbox/chain";
+import { parseCda, toFhirBundle } from "@health-samurai/interbox/ccda";
 
-defineMapper({
-  parser: ccdaParser,
-  map: (doc) => (toFhirBundle(doc).entry ?? []).map((e) => e.resource),
-});
+const ccdaToFhir = defineStep("ccda-to-fhir", (docs: Batch<string>) =>
+  docs.flatMap((xml) =>
+    (toFhirBundle(parseCda(xml, "ClinicalDocument")).entry ?? []).flatMap((e) => (e.resource ? [e.resource] : [])),
+  ),
+);
 ```
 
+A step that calls `parseCda` itself does not make the root-element checks
+described below; those belong to the 1.x `ccdaParser`.
+
 The bundle links its entries with `urn:uuid:` references. If your destination
-expects `Type/id` references, rewrite them in the mapper — `entry.fullUrl` carries
+expects `Type/id` references, rewrite them in the step — `entry.fullUrl` carries
 the `urn:uuid:` that the other entries point at, and every resource has an `id`.
 
 **Derive your own resource ids.** The bundle's ids are fresh UUIDs per conversion, so
@@ -460,7 +476,7 @@ A document is rejected before parsing when its root element is not
 not supported and are rejected with the error kind `prefixed_ccda`; the usual
 default-namespace form (`xmlns="urn:hl7-org:v3"`) is what to send.
 
-## `aidboxSender` — Aidbox FHIR sender
+## 1.x: `aidboxSender` — Aidbox FHIR sender
 
 ```ts
 type AidboxAuth =
@@ -488,7 +504,7 @@ aidboxSender({
 });
 ```
 
-## `hl7v2Parser` — HL7v2 parser
+## 1.x: `hl7v2Parser` — HL7v2 parser
 
 ```ts
 interface Hl7v2ParserConfig {
@@ -503,15 +519,16 @@ hl7v2Parser();                          // config optional, defaults to {}
 hl7v2Parser({ skipZSegments: true });
 ```
 
-Bound to a source's `parser` field — see [Pipelines](../concepts/pipelines.md)
-for how a source's parser type propagates to which mappers can attach to it.
+Bound to a 1.x source's `parser` field. A 2.0 pipeline parses HL7v2 with the
+`hl7v2Parser()` step from `@health-samurai/interbox/hl7v2` instead — see
+[Steps](steps.md#hl7v2-hl7v2parser-and-frommsh7).
 
 ## System descriptors — `fhirSystem`, `aidboxSystem`, `epicSystem`, `paragonSystem`
 
 Passed to `defineSystem`, not to a pipeline. All four speak base FHIR R4 through
 one client and differ in what has been tested and which credentials they accept —
 see [Systems](../concepts/systems.md) for the per-method support tables and the
-constraints on calling one from a mapper.
+constraints on calling one from a step.
 
 ```ts
 type FhirJwtAlg = "RS384" | "RS256" | "ES384" | "ES256";
@@ -551,8 +568,8 @@ export const ehr = defineSystem(fhirSystem, {
 
 The service interface each one yields — `read`, `readBinary`, `search`,
 `findPatientByIdentifier`, `get`, `operation`, `matchPatient` — is read-only by
-contract, because the dashboard's Retry re-runs a mapper. Writes belong in a
-sender.
+contract, because a Retry runs every step after the store again. Writes belong
+in a sender.
 
 Support tables are importable alongside the descriptors: `FHIR_SUPPORT`,
 `AIDBOX_SUPPORT`, `EPIC_SUPPORT`, `PARAGON_SUPPORT`. They record what has been

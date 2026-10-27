@@ -3,10 +3,11 @@
 Interbox is not a single process. A deployment is **three parts**, sized
 separately:
 
-- **The Interbox container** — the engine (MLLP ingest + pipeline workers) and
-  the API (which also serves the dashboard). Two Bun processes in one image.
-- **PostgreSQL** — a separate service. The message store, the work queue, and
-  the search index all live here.
+- **The Interbox container** — the engine (the sources and every pipeline's
+  workers) and the API (which also serves the dashboard). Two Bun processes in
+  one image.
+- **PostgreSQL** — a separate service. The pipelines' stores, the units, the
+  delivery queues and the search indexes all live here.
 - **Aidbox** — a separate JVM service, the FHIR destination the reference
   pipeline sends to.
 
@@ -22,31 +23,43 @@ PostgreSQL and Aidbox are the resource-heavy parts; the Bun container is light.
 
 Before the tables, the four things that actually move the needle:
 
-1. **Disk grows without bound.** There is no time-based retention and no
-   partition rotation — processed history piles up in the cold partitions
-   forever. Disk, not CPU or RAM, is the first thing you will run out of. Size
-   it for your retention horizon (see [Disk](#disk-the-first-limit)).
-2. **The trigram search index is the write cost.** Every inbound message
-   maintains GIN trigram indexes on the raw message body and the patient name.
-   That is what makes the free-text search in the dashboard instant, and it is
-   the dominant per-insert cost on the Postgres side. It also needs an SSD.
-3. **Autovacuum runs hot on purpose.** The hot queue partitions are tuned to
-   vacuum aggressively (`autovacuum_vacuum_cost_delay = 0`), which keeps the
-   working set lean but spends IO and CPU to do it. Give Postgres IO headroom.
-4. **The dashboard facet rail is a RAM burst.** Opening the messages view fires
-   six parallel `GROUP BY` queries, each allowed up to `FACET_WORK_MEM`
-   (default `128MB`) of `work_mem`. One dashboard load can therefore ask for
-   ~768 MB of transient sort/hash memory on top of the connection baseline.
+1. **Disk grows without bound.** There is no retention: each pipeline's store
+   keeps every value it received, and every unit stays in the units table, so
+   that a Retry always has its input. Disk, not CPU or RAM, is the first thing
+   you will run out of. Size it for your retention horizon (see
+   [Disk](#disk-the-first-limit)).
+2. **The trigram search index is the write cost.** A pipeline that declares
+   `search: "trgm"` on its store keeps a GIN trigram index on its units' search
+   text. That is what makes the dashboard's free-text search fast, and it is
+   the most expensive index to maintain: every status change of a unit writes
+   new index entries for its whole search text, and a unit is written at the
+   store and again at each later status, typically `processed` and `sent`. It
+   also needs an SSD. A pipeline without
+   `search` pays none of this; each attribute declared in `index` is a plain
+   btree index, far cheaper.
+3. **Autovacuum runs hot on purpose.** The units waiting at the store, the items
+   waiting for the sender, and the leases on both are rows inserted and deleted
+   all the time. Each pipeline's partitions of those tables are tuned to vacuum
+   aggressively (`autovacuum_vacuum_cost_delay = 0`), which keeps the working
+   set lean but spends IO and CPU to do it. Give Postgres IO headroom.
+4. **The dashboard facet rail is a RAM burst.** A facet request sets `work_mem`
+   to `FACET_WORK_MEM` (default `128MB`) for its own queries, which read at
+   most the newest 10,000 matching units of one pipeline. Each sort or hash in
+   them may use up to that much, on top of the connection baseline.
 
 ## Component budgets
 
 ### Interbox container (Bun)
 
 Light, and not the bottleneck. Baseline is roughly 50–150 MB RSS per Bun
-process; the engine adds one OS worker thread per pipeline stage (the reference
-`source → mapper → sender` pipeline is three). At the ~1 msg/s a "busy feed"
-implies, CPU is idle most of the time — batches are 100 rows in the mapper and
-500 in the sender.
+process. The engine runs each pipeline on its own OS worker threads: a source
+thread, a segment thread that runs the steps after the store, and a sender
+thread — three for the reference `source → steps → store → steps → sender`
+pipeline. A pipeline fed through a bridge has no source thread, and one that
+ends in a bridge has no sender thread. One more thread per workspace drains
+webhook events. At the ~1 msg/s a "busy feed" implies, CPU is idle most of the
+time — by default a take is 100 units after the store, and a sender cycle 100
+items.
 
 Two things to account for beyond steady state:
 
@@ -63,11 +76,16 @@ Two things to account for beyond steady state:
 ### PostgreSQL
 
 The scaling axis for both CPU and disk. Cost centers: trigram GIN index
-maintenance on insert, aggressive autovacuum on the hot partitions, and the
-facet rail's parallel aggregates. Connection load is the API pool (`max: 16`)
-plus a cancel pool (`max: 4`) plus one connection per engine worker plus the
-heartbeat — comfortably under the default `max_connections = 100` for a single
-node.
+maintenance where a pipeline declares search, aggressive autovacuum on the
+queue partitions, and the facet rail's aggregates. Connection load is the API
+pool (`max: 16`) plus a cancel pool (`max: 4`), plus a pool for each engine
+thread, at the Postgres driver's default of up to 10 connections each. A pool
+opens a connection only when its thread needs one, so that ceiling is reached
+only under load. On top of its pool, each source, segment and sender thread
+holds one connection of its own open for as long as it runs, to publish its
+live metrics: three for the reference pipeline, held even when no message
+arrives. Count both against the default `max_connections = 100` as you add
+pipelines.
 
 The template ships only `max_wal_size = 4GB`, `wal_compression = on`, and
 `pg_stat_statements`; **`shared_buffers` is left at the Postgres default of
@@ -78,7 +96,7 @@ The template ships only `max_wal_size = 4GB`, `wal_compression = on`, and
 ### Aidbox
 
 The dominant RAM consumer: a JVM FHIR server doing resource validation on every
-transaction Bundle the sender posts. Its footprint is set by the Aidbox image,
+batch Bundle the sender posts. Its footprint is set by the Aidbox image,
 not configured by Interbox.
 
 **Budget: 4 GB+ RAM, 2 vCPU** minimum.
@@ -95,7 +113,7 @@ you allowlist each one before anything can create it.
 
 | Extension            | Needed by | Required?                      | What for                                                       |
 | -------------------- | --------- | ------------------------------ | -------------------------------------------------------------- |
-| `pg_trgm`            | both      | required                       | trigram indexes — in Interbox, message and patient-name search |
+| `pg_trgm`            | both      | required                       | trigram indexes — in Interbox, a pipeline's free-text search   |
 | `btree_gist`         | Interbox  | required                       | GiST operator classes for plain column types                   |
 | `unaccent`           | Aidbox    | required                       | accent-insensitive search                                      |
 | `pgcrypto`           | Aidbox    | optional                       | cryptographic functions                                        |
@@ -174,30 +192,61 @@ the exact value to set — the current list plus what is missing — and when
 
 ## Disk: the first limit
 
-There is no retention job. Plan disk for how long you keep history, not for a
-steady state. As a planning figure, budget **~8 KB per stored message** — the
-raw HL7v2 body plus its trigram GIN index plus the btree indexes.
+There is no retention job for units or stored values. Plan disk for how long you
+keep history, not for a steady state. What one unit costs depends on what its
+pipeline keeps:
 
-| Sustained feed rate   | Messages / year | Disk / year @ ~8 KB |
-| --------------------- | --------------- | ------------------- |
-| 0.1 msg/s (light)     | ~3.2M           | ~25 GB              |
-| 1 msg/s ("busy feed") | ~31.5M          | ~250 GB             |
-| 10 msg/s (high)       | ~315M           | ~2.5 TB             |
+- **its stored value**, in the pipeline's store table — for the template's
+  HL7v2 pipeline, the raw message as text;
+- **its row** in the units table, with its attributes, and an entry in the
+  btree index of each attribute the store declares;
+- **its search text**, if a step sets one, and with `search: "trgm"` its
+  trigram index entries, usually the largest part. The template's pipeline
+  makes the whole raw message its search text, so the message is stored twice
+  and indexed once;
+- **a record of each of its sender items once it is finished**, in
+  `interbox.sender_item_done`: a short row for an item that was sent, dropped
+  or deleted, and the item's payload as well only for one the sender rejected.
+  Interbox purges these rows on its own, after
+  `INTERBOX_DONE_ITEMS_RETENTION_DAYS` days — 7 by default, anything from one
+  hour (`0.042`) to `36500`, or `0` to keep them for good — so they cost a few
+  days of items, not your whole history. It also purges delivered webhook
+  outbox rows on its own, after `WEBHOOK_RETENTION_DAYS` days (see
+  [Webhooks](../concepts/webhooks.md#retention)).
 
-For reference, a **100M-row** history is roughly 800 GB — a realistic
-prod-scale figure to plan around. Use SSD: the trigram search and the aggressive
-autovacuum both punish spinning disk.
+Measure your own figure once real traffic has run for a few days. For a
+pipeline named `hl7-to-aidbox`, whose tables carry the name with hyphens turned
+into underscores:
+
+```sql
+SELECT pg_size_pretty(
+         (pg_total_relation_size('interbox.store__hl7_to_aidbox')
+          + pg_total_relation_size('interbox.processing_unit__hl7_to_aidbox'))
+         / greatest(count(*), 1)) AS bytes_per_unit
+  FROM interbox.processing_unit__hl7_to_aidbox;
+```
+
+Then multiply by your volume:
+
+| Sustained feed rate   | Units / year |
+| --------------------- | ------------ |
+| 0.1 msg/s (light)     | ~3.2M        |
+| 1 msg/s ("busy feed") | ~31.5M       |
+| 10 msg/s (high)       | ~315M        |
+
+Use SSD: the trigram search and the aggressive autovacuum both punish spinning
+disk.
 
 ## Sizing tiers
 
 Whole-node figures, assuming all three parts share a host (split them across
 hosts for the larger tiers).
 
-| Tier            | Use                                     | App    | Postgres | Aidbox | Node total            | Disk       |
-| --------------- | --------------------------------------- | ------ | -------- | ------ | --------------------- | ---------- |
-| **Dev / eval**  | One laptop, all-in-one, poke it         | 0.5 GB | 1 GB     | 4 GB   | **8 GB / 4 vCPU**     | 20 GB      |
-| **Small prod**  | One busy feed, ~1 msg/s                 | 1 GB   | 4 GB     | 4 GB   | **12 GB / 4–6 vCPU**  | 250 GB+/yr |
-| **Medium prod** | Several feeds, large searchable history | 1–2 GB | 8–16 GB  | 6–8 GB | **24–32 GB / 8 vCPU** | 1 TB+ SSD  |
+| Tier            | Use                                     | App    | Postgres | Aidbox | Node total            | Disk                             |
+| --------------- | --------------------------------------- | ------ | -------- | ------ | --------------------- | -------------------------------- |
+| **Dev / eval**  | One laptop, all-in-one, poke it         | 0.5 GB | 1 GB     | 4 GB   | **8 GB / 4 vCPU**     | 20 GB                            |
+| **Small prod**  | One busy feed, ~1 msg/s                 | 1 GB   | 4 GB     | 4 GB   | **12 GB / 4–6 vCPU**  | SSD, from [Disk](#disk-the-first-limit) |
+| **Medium prod** | Several feeds, large searchable history | 1–2 GB | 8–16 GB  | 6–8 GB | **24–32 GB / 8 vCPU** | SSD, from [Disk](#disk-the-first-limit) |
 
 Bottleneck order, worst first: **disk (unbounded) → Postgres CPU (GIN +
 autovacuum + facets) → Aidbox RAM → the Bun container.**
@@ -210,9 +259,9 @@ query via the `FACET_WORK_MEM` environment variable. Everything else is a
 Postgres default you should raise for production.
 
 Set `effective_cache_size` to roughly 75% of the RAM you give Postgres (it is a
-planner hint, not an allocation), and keep `FACET_WORK_MEM × 6 × concurrent
-dashboard loads` comfortably under free RAM — that product is the facet rail's
-peak transient memory.
+planner hint, not an allocation), and keep `FACET_WORK_MEM` times the number of
+facet requests running at once well under free RAM, with room to spare: one
+facet query may sort or hash more than once.
 
 **Small prod** (Postgres with ~4 GB):
 
@@ -236,7 +285,7 @@ max_wal_size = 8GB
 ```
 
 For write-heavy feeds, put the WAL on a separate volume from the data and give
-autovacuum room — it is deliberately uncapped on the hot partitions.
+autovacuum room — it is deliberately uncapped on the queue partitions.
 
 ## Picking a starting point
 
@@ -252,8 +301,9 @@ reactively once real traffic shows you where it pinches:
 
 The one thing you cannot wing is **disk**. It grows forever — there is no
 retention — and under-sizing it is the painful mistake to fix late. Decide the
-disk size and a retention/archival plan up front from the
-[disk table](#disk-the-first-limit); treat everything else as adjustable.
+disk size and a retention/archival plan up front from
+[Disk](#disk-the-first-limit), measuring a unit's cost on your own messages
+before go-live if you can; treat everything else as adjustable.
 
 ## Once it's running: signals and levers
 
@@ -263,16 +313,18 @@ the matching knob.
 
 | You see (dashboard / Postgres)                 | Most likely means                            | Knob to turn                                     |
 | ---------------------------------------------- | -------------------------------------------- | ------------------------------------------------ |
-| Queue depth (pending + received) climbing      | ingest outpaces processing                   | more engine CPU — but check Aidbox latency first |
-| Aidbox Bundle POST latency or heap high        | the FHIR server downstream is the bottleneck | give Aidbox RAM/CPU; lower the sender batch size |
-| Dashboard search / facets slow                 | `work_mem` too low, or history is huge       | raise `FACET_WORK_MEM`; keep the 24h window      |
+| Units at `received` or `processed` climbing    | ingest outpaces processing or delivery       | more engine CPU — but check Aidbox latency first |
+| Aidbox Bundle POST latency or heap high        | the FHIR server downstream is the bottleneck | give Aidbox RAM/CPU; lower the sender's `batch`  |
+| Dashboard search / facets slow                 | `work_mem` too low, or history is huge       | raise `FACET_WORK_MEM`; narrow the time window   |
 | Postgres writing temp files (sort/hash spills) | `work_mem` too low for the query             | raise `work_mem` / `FACET_WORK_MEM`              |
 | Disk filling up                                | history piling up — there is no retention    | add disk now; start a retention/archival plan    |
 | Postgres CPU high, dead tuples rising          | autovacuum can't keep up                     | more Postgres CPU/IO (already tuned aggressive)  |
 
-The single most telling signal is **queue depth**: if the pending and received
-row counts stay flat you are keeping up; if they climb, processing cannot match
-ingest — and the cause is almost always Aidbox downstream, not the engine.
+The single most telling signal is **queue depth**: if the counts of units at
+`received` (waiting for their steps) and `processed` (waiting for delivery) stay
+flat you are keeping up; if they climb, processing or delivery cannot match
+ingest — and the cause is usually Aidbox downstream, not the engine. The
+dashboard's sender panel shows how many items wait for delivery, and why.
 
 ## Caveats
 
@@ -280,5 +332,6 @@ ingest — and the cause is almost always Aidbox downstream, not the engine.
   live signals once real traffic arrives.
 - The Helm chart lives in a separate `helm-charts` repository and currently
   ships `replicas = 1`; HA is not yet available.
-- Disk figures assume ~8 KB/message — a wide message body or extra indexes
-  moves it. Measure your own average once you have real traffic.
+- A unit's disk cost depends on what its pipeline stores, the search text it
+  sets and the indexes it declares — measure your own average once you have
+  real traffic.
