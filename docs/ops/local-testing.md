@@ -143,8 +143,8 @@ helm install interbox healthsamurai/interbox -f values.yaml
 
 ```sh
 # unauthenticated -> redirected to the login gate (SSO enforced)
-curl -sk -o /dev/null -D - https://interbox.localhost:8443/api/messages | grep -iE '^HTTP|^location'
-#   HTTP/1.1 302 ... Location: .../oauth2/start?rd=/api/messages  -> then on to Dex
+curl -sk -o /dev/null -D - https://interbox.localhost:8443/api/pipelines | grep -iE '^HTTP|^location'
+#   HTTP/1.1 302 ... Location: .../oauth2/start?rd=/api/pipelines  -> then on to Dex
 
 # TLS served by the cert-manager CA
 echo | openssl s_client -connect interbox.localhost:8443 -servername interbox.localhost 2>/dev/null \

@@ -4,7 +4,9 @@ Interbox releases two artifacts cut from the same commit and versioned in
 lockstep: the **engine image** (`healthsamurai/interbox` on Docker Hub) and the
 **SDK** (`@health-samurai/interbox` on npm) your workspace is built against.
 Updating means moving the image to a new tag and keeping the workspace's SDK in
-a compatible range. Database migrations run automatically on boot.
+a compatible range. Database migrations run automatically on boot; one that
+builds an index on a large delivery queue (`sender_item`) makes that boot take
+longer, in proportion to the backlog.
 
 Before updating, read the
 [release notes](https://github.com/HealthSamurai/interbox-workspace/releases) of

@@ -152,7 +152,9 @@ the pipeline's declared indexes over every imported unit **before any stage
 starts**, so on a large history it lengthens the outage. A very large import
 makes that first boot's index build long, minutes rather than seconds, so time
 the first boot in the rehearsal along with the import. Use your rehearsal's
-numbers, not these.
+numbers, not these. The engine's own two indexes for the dashboard's counts are
+built after the stages start, in the background, and add nothing to the outage;
+until they are ready, the dashboard's counts for that pipeline can be slow.
 
 ## The script
 

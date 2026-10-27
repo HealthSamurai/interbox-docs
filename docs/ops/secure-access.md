@@ -837,33 +837,28 @@ revokes every one of them. Both take effect immediately, and neither needs a
 restart or a change to the deployment's configuration.
 
 What a grant reaches is not nothing. It reads message content, and that is PHI:
-messages and their FHIR output and, on Interbox 2.0, each pipeline's units —
-their attributes and error messages, each unit's stored value, and the payload of
+each pipeline's units, their attributes and error messages, each unit's stored value, and the payload of
 each of its items that is waiting to be sent or was rejected. It also writes: it
 can update the workspace checkout, rewrite clinical code translation, and Retry
-and Defer both messages and 2.0 units.
+and Defer units.
 
-What it reaches is seventeen route shapes, matched by method and path, and
-nothing outside them. Eleven read:
+What it reaches is eleven route shapes, matched by method and path, and
+nothing outside them. Seven read:
 
-- `GET /api/messages`, `GET /api/messages/:id` and `GET /api/messages/:id/fhir`
-- `GET /api/stats/error-kinds`, `GET /api/unmapped-codes` and
-  `GET /api/terminology/loinc`
+- `GET /api/unmapped-codes` and `GET /api/terminology/loinc`
 - `GET /api/repository`
 - `GET /api/pipelines` and `GET /api/pipelines/:name/units`
 - `GET /api/units/:id` (the unit with its stored value) and
   `GET /api/units/:id/items/:itemId` (the item, with its payload while it waits
   and, once it has finished, only if it was rejected)
 
-Six write:
+Four write:
 
 - `POST /api/repository/pull` — updates the workspace checkout and reloads the
   engine
 - `POST /api/concept-maps/:map/entries` — rewrites clinical code translation
-- `POST /api/messages/retry` and `POST /api/messages/defer` — re-queue messages,
-  including ones already delivered
 - `POST /api/pipelines/:name/units/retry` and
-  `POST /api/pipelines/:name/units/defer` — Retry or Defer 2.0 units, up to 1000
+  `POST /api/pipelines/:name/units/defer` — Retry or Defer units, up to 1000
   per request; a Retry re-queues a unit already sent, too
 
 Nothing else: no SQL console, no workspace actions, no repository file writes, no

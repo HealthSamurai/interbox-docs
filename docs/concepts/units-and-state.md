@@ -201,6 +201,13 @@ The store declares which attrs are indexed:
 - **The engine builds the indexes when it loads the pipeline**, without
   blocking writes to a pipeline that already has units. A pipeline gets new
   facets with no migration.
+- **The engine adds two indexes of its own to every pipeline's units**, for
+  the dashboard's counts and its `status` and `error_kind` filters. A new
+  pipeline gets them when it is loaded. A pipeline that already holds units
+  without them, such as one upgraded from an earlier version, gets them in the
+  background once its stages run, so they do not delay its start. That build
+  reads the pipeline's units once, and until it ends the dashboard's counts for
+  that pipeline can be slow.
 - **The dashboard filters and counts on declared attrs only**, beside
   `status`, `error_kind` and `error_step`. A step's `ctx.units` may filter on
   any attr, but an undeclared one reads every unit of the pipeline.

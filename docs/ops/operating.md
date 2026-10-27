@@ -8,12 +8,10 @@ the same actions from a script, see [Admin Scripts](admin-scripts.md).
 
 ## The dashboard
 
-**Pipelines** and **Instances** appear in the sidebar once at least one
-pipeline has created its tables. From then on **Dashboard** opens on the 2.0
-home, **Sources** shows the pipelines' sources, and the sidebar no longer lists
-the 1.x message pages. **Reference** stays listed: one entry for the HL7v2 and
-C-CDA references, with a switch between the two in the page header. **Code
-mappings** stays listed too, and lists the codes the pipelines' units wait on.
+**Dashboard** opens on the home, **Sources** shows the pipelines' sources, and
+**Pipelines** and **Instances** are listed in the sidebar. **Reference** is one
+entry for the HL7v2 and C-CDA references, with a switch between the two in the
+page header. **Code mappings** lists the codes the pipelines' units wait on.
 **Units** and **Unit** open from the Pipelines page, the Dashboard and the
 Sources page.
 
@@ -79,9 +77,6 @@ reached `error` per second, not of the percent.
   depths count it once per pipeline.
 - **When Postgres cannot be reached**, System health reads Postgres and the
   engine down and the mapping coverage unknown.
-
-When no pipeline has created its tables, or the pipeline list cannot be read,
-**Dashboard** is the 1.x home.
 
 ### Pipelines
 
