@@ -140,7 +140,7 @@ a failure does.
 | `flatMap` | each element becomes a unit of its own | each element becomes an **item** of the same unit |
 | a throw | fails the whole input: nothing of it is stored, and the sending side gets an error and resends | fails the row's unit only |
 | `skip` | records a `skipped` unit with its attributes and no stored value; the input is still acknowledged | ends the unit at `skipped`; after a `flatMap` split, counts a skipped item and the unit goes on |
-| `notReady` | not allowed: fails the input, like a throw | the unit stays at the store and is taken again after the delay, at least a second |
+| `notReady` | not allowed: fails the input, like a throw | the unit stays at the store and is taken again after the delay, at least a second; each take starts from its stored attrs, and its queue row records the hold's reason for display |
 | `mapAll` | called once per part of up to 1000 rows; an `Error` in any row's place fails the input | called once for the take's rows; a throw, or a result of the wrong length, fails every unit in the call |
 
 A throw inside a method's function after the store is classified: a

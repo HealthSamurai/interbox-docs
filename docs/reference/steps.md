@@ -203,7 +203,17 @@ attrs under `_skipped`, as `{ "<reason>": <count> }`.
   string value.
 - **When they are written.** Before the store, with the unit. After the store,
   when the unit leaves the store as `processed`, `sent` or `skipped`. A unit
-  that fails or waits keeps the attrs it had at the store.
+  that fails or waits keeps the attrs it had at the store, and every take of a
+  waiting unit starts from them.
+- **A waiting unit says so.** A unit held by `notReady`, or by a thrown
+  `NotReady`, records the hold on its queue row, beside the wait, as
+  `notReady: { reason?, attrs? }`, and the dashboard shows what the unit
+  waits for: `reason` is the `NotReady`'s message when one was thrown, cut to
+  1024 characters, and `attrs` holds the attrs its steps set or changed
+  before the hold, left out when one of them cannot be stored. The hold is
+  not in the unit's attrs, so steps never see it. It is cleared when the unit
+  fails in a way that may pass or its lease expires, and it goes when the
+  unit closes or fails.
 - **`withOrder`** sets the time of the event the unit records. Without it a
   unit's `order_at` is the time it was created. It orders the queued versions
   of one resource, see [Units and State](../concepts/units-and-state.md).
@@ -864,6 +874,12 @@ How it answers for each resource:
 | 5xx, no answer, or a 408, 425, 429 or redirect to the whole request | an error, tried again after `retryDelayMs` | `sender/aidbox_unreachable` |
 | any other refusal | the unit ends at `error` at once | `sender/aidbox_rejected` |
 
+A refusal's message holds every error issue Aidbox, or `$validate`, reported for
+the resource: `<n> errors: <path>: <diagnostics> [<codes>]; …`, or the one line
+alone, cut at 2,000 characters with `… and <n> more`. A resource waits for a
+missing reference only when that is all that is wrong with it, and the wait's
+message names every missing reference, the first ten and a count of the rest.
+
 A resource whose content matches what this pipeline last delivered is answered
 delivered without being sent. A resource this pipeline has not delivered before
 is a `PUT`; one that changed since it was delivered is a `PATCH`. To remove an
@@ -879,9 +895,28 @@ These environment variables tune every `aidbox()` sender in the engine:
 | variable | default | what it bounds |
 |---|---|---|
 | `INTERBOX_AIDBOX_MAX_BODY_BYTES` | 8 MiB | the body of one request |
-| `INTERBOX_AIDBOX_MAX_ENTRIES_PER_REQUEST` | none | the entries of one bundle |
+| `INTERBOX_AIDBOX_MAX_ENTRIES_PER_REQUEST` | none | the entries of one request |
 | `INTERBOX_AIDBOX_CONCURRENCY` | 4 | requests in flight within one send |
 | `INTERBOX_AIDBOX_REQUEST_TIMEOUT_MS` | none | one request; the send's own deadline still applies |
+
+One send of n resources splits them over
+min(`INTERBOX_AIDBOX_CONCURRENCY`, n / 50 rounded down) requests that go out at
+the same time, about n / `INTERBOX_AIDBOX_CONCURRENCY` each and at least 50
+where the send allows it: 500 resources with no reference between them are four
+requests of 125, 120 are two of 60, and fewer than 100 are one request.
+Resources joined by a reference stay in one request, or in requests sent one
+after another, with the referenced resource first, so a request can come out
+smaller or larger than the others. `INTERBOX_AIDBOX_MAX_BODY_BYTES` and
+`INTERBOX_AIDBOX_MAX_ENTRIES_PER_REQUEST` split a request further. Set
+`INTERBOX_AIDBOX_CONCURRENCY` to 1 to send one request at a time.
+
+> **Upgrade note.** Earlier engines sent a whole send as one request unless a
+> cap split it, so `INTERBOX_AIDBOX_CONCURRENCY` rarely had anything to overlap.
+> Now a send of about 100 resources or more goes out as up to
+> `INTERBOX_AIDBOX_CONCURRENCY` (4 by default) parallel requests, per sender and
+> per worker, which raises the load on Aidbox and its database. A slow answer
+> that times out counts toward `maxRetries`. Set `INTERBOX_AIDBOX_CONCURRENCY=1`
+> to keep the earlier behaviour.
 
 `contentHash` and `extractRefs`, the two functions behind `fhirItems()`, are
 exported from `/aidbox` as well.

@@ -25,10 +25,14 @@ Each 1.x status lands on a 2.0 status:
 | 1.x status | 2.0 status | what the 2.0 engine does with it |
 |---|---|---|
 | `received` | `received` | parses, maps and sends it, as a new message |
-| `processed` | `received` | the same: its pending 1.x deliveries are not carried, so the 2.0 engine maps and sends it again |
+| `processed`, with a pending delivery | `received` | the same: its pending 1.x deliveries are not carried, so the 2.0 engine maps and sends it again |
+| `processed`, with none pending | `sent` | nothing: its resources already reached Aidbox through later messages, and sending it again would merge older content over newer |
 | `sent` | `sent` | nothing: history the dashboard shows and searches |
 | `error` | `error` | nothing until you retry it, from the dashboard or with [`retryUnits`](admin-scripts.md); an unmapped-code error waits in the unmapped-code queue under the pipeline |
 | `deferred` | `deferred` | nothing until you retry it |
+
+The dry run and the final tally count the `processed` messages that land on `received` as
+`processed`, and those that land on `sent` as `superseded`.
 
 Each unit keeps what the 1.x row knew:
 
@@ -58,9 +62,10 @@ moved its first one, so it replaces it.
 
 **What is not moved:**
 
-- `interbox.ingestion_queue`, the 1.x deliveries still pending. The messages
-  they came from are `received` or `processed`, and the 2.0 engine maps and sends
-  those again.
+- `interbox.ingestion_queue`, the 1.x deliveries still pending. The script only
+  reads it, to decide where a `processed` message lands: on `received` when it
+  still has a pending delivery, so 2.0 maps and sends it again, otherwise on
+  `sent`. Truncate it once the cutover is final.
 - `interbox.ccda_in`. C-CDA documents stay where they are; the script logs a
   warning when the table holds any.
 - A 1.x message's hash, its channel and its `extra` column.
@@ -115,18 +120,21 @@ rows, which is why the backup in the next section is not optional.
 2. **Rehearse on a copy of the database.** Restore a recent backup into a scratch
    database and run the whole cutover against it: the migrations, the import, and
    a 2.0 engine on the rewritten workspace. Time each step; the outage window is
-   their sum.
+   their sum. Use a realistic volume: a small synthetic rehearsal hides the costs
+   of a large history.
 3. **Look at the counts.** `--dry-run` prints what would move, per 1.x status,
    and the number of fingerprints, and changes nothing. It also reports a refusal
    the data itself would cause: messages from several channels, or a store that
    is not text. It checks neither for running engines nor for leases, so you may
    point it at the copy or at the live database while 1.x still runs. On the live
    database it costs a full read of `hl7v2_in`, every message included, so run it
-   there at a quiet hour.
+   there at a quiet hour. The counts are also the workload: every unit that
+   lands on `received` is mapped and sent again after the cutover, so estimate
+   how long that takes in the rehearsal.
 4. **Plan the outage.** The MLLP listener is down from the moment 1.x stops until
    the 2.0 engine is ready. Confirm that every sender queues and retries when its
    connection is refused; most interface engines do.
-5. **Check the disk.** Leave free at least twice the size of `hl7v2_in`, plus room
+5. **Check the disk and the database's headroom.** Leave free at least twice the size of `hl7v2_in`, plus room
    for the WAL the import writes. Every message is written again, into the
    pipeline's store and, with `--search-text message`, into its search text, and
    the first 2.0 boot builds a trigram index over that search text. The 1.x rows'
@@ -137,12 +145,19 @@ rows, which is why the backup in the next section is not optional.
    SELECT pg_size_pretty(sum(pg_total_relation_size(relid)))
      FROM pg_partition_tree('interbox.hl7v2_in');
    ```
+
+   Disk is not the only limit. The database's IOPS, memory and connection limit
+   set the pace of the import, the first boot and re-sending the backlog. On a
+   small server, consider scaling it up for the cutover window.
 6. **Plan the backup.** Back up the production database as late as you can.
    With cluster access, take it after the engine has stopped and before the
    import runs, so it holds every message 1.x accepted. With Git access only, the
    engine stops and the import starts in the same reconcile, so the backup comes
    before the first pull request merges, and messages 1.x accepts between the
-   backup and its stop are not in it.
+   backup and its stop are not in it. Also with Git access only, confirm before
+   the first pull request that the reconciler really applies changes: its source
+   is healthy and fetching recent commits. An expired credential makes the
+   first pull request do nothing.
 
 As a sizing guide, on a laptop's local Postgres the script moved about 19,000
 messages a second (100,000 messages of about 400 bytes, with search text, and
@@ -413,24 +428,149 @@ When every change reaches the cluster through a reconciler and you have no
 **First pull request: stop the engine and run the import.**
 
 - In the HelmRelease values, set `replicaCount: 0`.
-- Add the Job manifest above to a path the reconciler applies, with
-  `--wait-for-engines 10m`.
+- Add the manifest below to a path the reconciler applies.
 
-Once it merges, the reconciler scales the engine down and starts the Job, in the
-same pass and in no set order. The Job can start before the old pod has even been
-told to stop, which is what `--wait-for-engines` covers: the script waits until
-the old engine's heartbeat goes stale, about 6 seconds after it is told to stop,
-and starts then. Ten minutes leaves room for a slow pod deletion and costs
-nothing when the engine stops quickly. `migrate.ts` runs before the wait, which
-is safe: the 2.0 migrations add tables a 1.x engine does not use, and drop only
-one that a 1.x engine creates in its development mode.
+The Job runs the migrations, an optional copy of the 1.x tables, the import and
+a last `VACUUM`, in that order. The two small scripts that do the copy and the
+`VACUUM` are not in the image, so a ConfigMap mounts them into the Job. Copy
+`imagePullSecrets` from the release, and the container `securityContext` (the
+chart sets one on its container) if your cluster's policies require it.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: interbox-import-1x-steps
+  namespace: <namespace>
+data:
+  pre-import.js: |
+    import { sql } from "bun";
+
+    const GIVE_UP_MS = 10 * 60 * 1000;
+
+    async function runningEngines() {
+      const rows = await sql.unsafe(
+        "SELECT count(*)::int AS n FROM interbox.engine_heartbeat WHERE at >= now() - interval '6 seconds'",
+      );
+      return rows[0].n;
+    }
+
+    const deadline = Date.now() + GIVE_UP_MS;
+    while ((await runningEngines()) > 0) {
+      if (Date.now() > deadline) {
+        console.error("pre-import: an engine is still beating after 10 minutes; stop every engine and run the Job again");
+        process.exit(1);
+      }
+      await Bun.sleep(1000);
+    }
+
+    await sql.unsafe("CREATE SCHEMA IF NOT EXISTS interbox_pre2");
+
+    const started = await sql.unsafe(
+      "SELECT 1 FROM interbox.pipeline_state WHERE namespace = 'interbox:import-1x' AND key = '1x' LIMIT 1",
+    );
+    if (started.length > 0) {
+      console.log("pre-import: an import has already moved rows; keeping the existing copy in interbox_pre2");
+    } else {
+      await sql.unsafe(
+        "DROP TABLE IF EXISTS interbox_pre2.hl7v2_in; " +
+          "DROP TABLE IF EXISTS interbox_pre2.resource_hash; " +
+          "CREATE TABLE interbox_pre2.hl7v2_in AS TABLE interbox.hl7v2_in; " +
+          "CREATE TABLE interbox_pre2.resource_hash AS TABLE interbox.resource_hash",
+      );
+      console.log("pre-import: copied hl7v2_in and resource_hash into interbox_pre2");
+    }
+    await sql.close();
+  post-import.js: |
+    import { sql } from "bun";
+
+    const pipeline = process.argv[2];
+    if (!pipeline || !/^[A-Za-z0-9_-]+$/.test(pipeline)) {
+      console.error("usage: bun post-import.js <pipeline>");
+      process.exit(2);
+    }
+
+    const partition = "interbox.processing_unit__" + pipeline.replaceAll("-", "_");
+    await sql.unsafe("VACUUM (ANALYZE) " + partition);
+    console.log("post-import: vacuumed " + partition);
+    await sql.close();
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: interbox-import-1x
+  namespace: <namespace>
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 300
+      containers:
+        - name: import-1x
+          image: healthsamurai/interbox:<2.0 version>
+          command: ["bash", "-c"]
+          args:
+            - >-
+              cd /app/apps/engine &&
+              bun scripts/migrate.ts &&
+              bun /steps/pre-import.js &&
+              bun scripts/import-1x.ts --pipeline <pipeline> --search-text message
+              --wait-for-engines 1m &&
+              bun /steps/post-import.js <pipeline>
+          envFrom:
+            - secretRef:
+                name: interbox-secrets
+          volumeMounts:
+            - name: steps
+              mountPath: /steps
+      volumes:
+        - name: steps
+          configMap:
+            name: interbox-import-1x-steps
+```
+
+Both scripts use Bun's built-in `sql` with the `DATABASE_URL` from the Job's
+environment, and their text holds no `${`: Flux's `postBuild` substitution would
+rewrite it before the cluster sees it, which is why they build their SQL from
+plain strings. The alternative is to keep them as they are and annotate the
+ConfigMap with `kustomize.toolkit.fluxcd.io/substitute: disabled`.
+
+What the steps do:
+
+- **`pre-import.js`** waits until no engine has beaten in the last 6 seconds,
+  polling every second, and gives up with exit `1` after 10 minutes. It does the
+  waiting itself because the old pod may not have been told to stop yet: the Job
+  and the scale-down start in the same reconcile, in no set order. Then it copies
+  `hl7v2_in` and `resource_hash` into the schema `interbox_pre2`. The copy is
+  retaken on every run until an import has moved a row; after that it is kept, so
+  a rerun after a partial move never overwrites it.
+- **`post-import.js`** runs `VACUUM (ANALYZE)` on the pipeline's unit partition,
+  so the dashboard's counts for it come from indexes right away.
+
+The copy is optional: it is the [rollback](#rolling-back) path when you cannot
+restore a backup yourself. It costs disk, one more copy of `hl7v2_in` and
+`resource_hash`. To skip it, drop `pre-import.js` and its `&&` from the
+arguments, and keep the wait: run the import with `--wait-for-engines 10m`.
+
+Once the pull request merges, the reconciler scales the engine down and starts
+the Job. `migrate.ts` runs before the wait, which is safe: the 2.0 migrations add
+tables a 1.x engine does not use, and drop only one that a 1.x engine creates in
+its development mode. Keep `backoffLimit: 0` and `restartPolicy: Never`, so a
+failed run is not retried behind your back, and the long
+`terminationGracePeriodSeconds`: the import stops on `SIGTERM` only between
+steps, and its first step counts `hl7v2_in` in one full read, which takes
+minutes on a large table. A `SIGKILL` at the end of a short grace period would
+leave its leases held until their term runs out. In this chain `bash` is the
+container's first process and does not pass `SIGTERM` on to the import, so do not
+delete the Job while it runs: let it finish or fail, then read its log.
 
 Leave out `ttlSecondsAfterFinished`: a reconciler re-creates a Job that the TTL
 deleted, and runs the import again.
 
 **Second pull request, once the Job has completed:**
 
-- Remove the Job manifest. A reconciler that prunes deletes the Job; one that
+- Remove the Job and ConfigMap manifests. A reconciler that prunes deletes the Job; one that
   does not leaves it for someone with cluster access.
 - Set the image to the 2.0 version and point the engine at the rewritten
   workspace.
@@ -503,3 +643,59 @@ To return to 1.x, restore the backup taken before the cutover and redeploy the
 tables only, so it is lost with the restore unless the senders send it again.
 So are messages 1.x accepted between the backup and its stop, which is why, with
 cluster access, the backup is taken after the engine has stopped.
+
+**With the in-database copy instead of a backup.** If the Job took the copy in
+`interbox_pre2` (see [With Git access only](#with-git-access-only)), you can roll
+back without a restore:
+
+1. Stop the 2.0 engine.
+2. Put the copied rows back:
+
+   ```sql
+   INSERT INTO interbox.hl7v2_in SELECT * FROM interbox_pre2.hl7v2_in;
+   INSERT INTO interbox.resource_hash SELECT * FROM interbox_pre2.resource_hash;
+   ```
+
+3. Start the 1.x image and workspace. A 1.x engine boots on the schema the 2.0
+   migrations changed. Anything 2.0 received meanwhile stays in 2.0's tables, so
+   the senders must send it again.
+
+### Running the import again after a rollback
+
+The script refuses with `target_has_units`: the pipeline already holds 2.0
+units. Before running it again, remove everything 2.0 wrote for the pipeline.
+Drop its partitions, which are named `<table>__<pipeline>` with each `-` in the
+pipeline's name written as `_`:
+
+```sql
+DROP TABLE interbox.processing_unit__<pipeline>;
+DROP TABLE interbox.unit_queue__<pipeline>;
+DROP TABLE interbox.sender_item__<pipeline>;
+DROP TABLE interbox.pipeline_state__<pipeline>;
+DROP TABLE interbox.lease__<pipeline>;
+DROP TABLE interbox.store__<pipeline>;
+```
+
+Then delete the pipeline's rows from the tables that are not partitioned:
+
+```sql
+DELETE FROM interbox.sender_item_done WHERE pipeline = '<pipeline>';
+DELETE FROM interbox.unit_status_event WHERE pipeline = '<pipeline>';
+DELETE FROM interbox.webhook_outbox WHERE pipeline = '<pipeline>';
+```
+
+The 1.x rows must be back in `hl7v2_in` and `resource_hash` first, by one of the
+two ways above.
+
+## Once the cutover is final
+
+When you will not roll back, free the space and clear what only a rollback
+needs:
+
+```sql
+DROP SCHEMA interbox_pre2 CASCADE;
+TRUNCATE interbox.ingestion_queue;
+```
+
+`ingestion_queue` holds the 1.x deliveries that were pending at the cutover. The
+2.0 engine does not read it, and it is useful only if you return to 1.x.

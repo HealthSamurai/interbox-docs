@@ -340,6 +340,58 @@ the same three-way merge git would:
 Nothing is overwritten silently, and nothing is lost by refusing — your work
 stays in the browser either way.
 
+## Workspace actions
+
+A workspace can ship server-side functions that its own UI pages run on demand.
+Put them in `server/actions.ts`: every exported function is an action, except a
+`default` export and a name starting with `_`.
+
+```ts
+export async function dailyReport(input: { day: string }, ctx) {
+  ctx.log(`building the report for ${input.day}`);
+  return { day: input.day, rows: await countUnits(ctx.dbUrl, input.day) };
+}
+```
+
+An action gets the request's JSON body as `input`, and a context with `dbUrl`,
+`log(message)` and `signal`. `signal` aborts at the deadline, 15 minutes unless
+`WORKSPACE_ACTION_TIMEOUT_MS` sets it; an action that ignores it keeps running.
+
+| route | does |
+|---|---|
+| `GET /api/workspace/actions` | the names of the actions |
+| `POST /api/workspace/actions/<name>` | starts a run and answers `202` with `{ runId, action, startedAt }`, at once, never with its outcome; `409` while that action already runs |
+| `GET /api/workspace/actions/runs` | the last 50 runs, newest first, without their results |
+| `GET /api/workspace/actions/runs/<runId>` | one run, with its result; `404` once it has left the last 50 |
+
+A run is `{ runId, action, startedAt, finishedAt?, ok?, error?, result?,
+resultBytes?, resultError? }`. It is finished when `finishedAt` is set: poll the
+run by id until then. `ok: false` carries the thrown message in `error`.
+
+**What an action returns is its run's `result`**, as JSON, so a `Date` arrives
+as its ISO string, and `resultBytes` is the size of that JSON. It is capped at
+256 KiB of JSON unless `WORKSPACE_ACTION_RESULT_MAX_BYTES` sets another whole
+number of bytes; `0` keeps no result at all. A larger result, or one JSON cannot
+hold (a cycle, a `BigInt`, a function), is dropped: the run stays `ok: true`,
+and `resultError` says why. Serialising stops as soon as the result is known to
+be over the cap, so a huge return value is not copied in full first. A value of
+the variable that is not a whole number of bytes keeps no result either, and
+`resultError` names it. Returning nothing leaves all three unset.
+
+Runs and their results live in the memory of the process that ran them, as
+JSON text, so they hold at most 50 times the cap: a restart forgets them, and so
+does the 51st run after them. A report that must outlive that, or that is larger
+than the cap, belongs in a table of the workspace's own, with the action
+returning where to find it.
+
+With sign-in on, only a signed-in operator can list, start or read runs, and
+every signed-in operator can read every run by its id: a result is not tied to
+the session that started it, so do not return data some operators must not
+see. With sign-in turned off (`INTERBOX_AUTH_ENABLED=false`, see
+[Securing Dashboard Access](secure-access.md#turning-it-off)), anyone who can
+reach the API can do all of that. A [service credential](secure-access.md)
+cannot reach these routes either way.
+
 ## Switching the branch an environment runs
 
 At `apply`, the Repository tab's branch picker points the engine at another

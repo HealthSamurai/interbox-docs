@@ -187,8 +187,8 @@ most 1000 entries.
 ### `retryUnits`
 
 Returns units at `error`, `deferred` or `sent` to `received`, with their error
-cleared and a fresh place in the queue; the pipeline runs them again from the
-store. Items a unit left in the delivery queue are deleted first. It answers
+and `_skipped` counts cleared and a fresh place in the queue; the pipeline runs
+them again from the store. Items a unit left in the delivery queue are deleted first. It answers
 `{ retried, unchanged }`, and each unchanged unit names its reason: `status`
 (with the unit's status), `busy`, `item_in_flight` — one of its items is being
 delivered right now — or `not_found`.

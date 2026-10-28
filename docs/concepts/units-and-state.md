@@ -111,7 +111,7 @@ How a unit moves between them:
 |---|---|---|
 | — | `received` | the store commits it, from a source's input or from a bridge |
 | — | `skipped` | a step before the store skipped its row; nothing is stored |
-| `received` | `received` | a step answered `notReady`, a [reference lookup](../reference/steps.md#reference-lookups-definelookup-and-ctxlookup) was not ready, or a step failed in a way that may pass; the unit is taken again later |
+| `received` | `received` | a step answered `notReady`, a [reference lookup](../reference/steps.md#reference-lookups-definelookup-and-ctxlookup) was not ready, or a step failed in a way that may pass; the unit is taken again later. The queue row of a unit that waits records what it waits for, see [Attrs](../reference/steps.md#attrs-order-and-search-text) |
 | `received` | `processed` | the steps after the store produced at least one item |
 | `received` | `sent` | they produced no item, or the pipeline sends into a bridge |
 | `received` | `skipped` | a step after the store skipped its row before any split |

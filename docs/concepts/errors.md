@@ -147,11 +147,12 @@ An operator acts on failed units from the dashboard, or from a script through
 `retryUnits` and `deferUnits` in the [admin library](../ops/admin-scripts.md).
 
 **Retry** takes a unit at `error`, `deferred` or `sent` back to the store: its
-status returns to `received`, its error fields are cleared, its attempt count
-starts over, and every step after the store runs again on the stored value,
-with the code and concept maps the workspace has now. For Aidbox, the resources
-already delivered and unchanged are not sent again. Retry is how a failure is
-re-run after a fix, and how a delivered unit is sent once more.
+status returns to `received`, its error fields and its `_skipped` counts are
+cleared, its attempt count starts over, and every step after the store runs
+again on the stored value, with the code and concept maps the workspace has
+now. For Aidbox, the resources already delivered and unchanged are not sent
+again. Retry is how a failure is re-run after a fix, and how a delivered unit
+is sent once more.
 
 **Defer** takes a unit at `error` to `deferred`, and keeps its error fields.
 It sets aside a failure that will not be fixed, so it no longer counts among

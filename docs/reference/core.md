@@ -24,7 +24,7 @@ What's in it, by category:
 | error taxonomy | `domainError`, `ERROR_GROUPS`, `ErrorGroup` | you — re-exported from the root, see [Errors](../concepts/errors.md) |
 | payloads | `PayloadItem`, `PayloadBody`, `bodyFromBytes`, `bodyFromStream`, `concatChunks`, `PayloadBodyConsumed`, `ConfiguredPreprocessor`, `Preprocessor`, `PreprocessorDefinition` | you, on 1.x, when a source you define runs a `preprocess` chain or you declare a preprocessor — all but `concatChunks` and `ConfiguredPreprocessor` are re-exported from the root, the latter from `/builtins`; see [Preprocessing what a source read](index.md#preprocessing-what-a-source-read) and [Defining a preprocessor](index.md#defining-a-preprocessor) |
 | 1.x stage runtime contracts | `SourceDefinition`/`SenderDefinition`/`ParserDefinition` + their `*Config`/`*Entry`/`*Factory`/`*Instance` siblings, `Runner` | the 1.x engine, except `SourceDefinition`, which a 1.x workspace implements through `defineSource` — see [Sources](index.md#sources) |
-| shared names and keys | `checkPipelineName`, `byNumericId`, `resLeaseKey`, `RES_LEASE_PREFIX`, `ITEM_LEASE_PREFIX` and the lease-key SQL helpers | the engine and the [admin library](../ops/admin-scripts.md), so both read a pipeline name and a sender's lease the same way |
+| shared names and keys | `checkPipelineName`, `byNumericId`, `resLeaseKey`, `RES_LEASE_PREFIX`, `ITEM_LEASE_PREFIX`, the lease-key SQL helpers and `SKIPPED_ATTR` | the engine and the [admin library](../ops/admin-scripts.md), so both read a pipeline name, a sender's lease and a unit's skip counts the same way |
 
 Annotating a helper that takes a step's context needs no `/core` import. Take
 only what the helper uses, so a step's `StepContext` and a row function's

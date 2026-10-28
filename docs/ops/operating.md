@@ -470,7 +470,7 @@ Each runs in one short transaction and answers at once.
 
 | action | takes a unit at | the unit becomes |
 |---|---|---|
-| Retry | `error`, `deferred` or `sent` | `received`, with its error cleared, and a fresh place at the store: no attempts counted, due at once |
+| Retry | `error`, `deferred` or `sent` | `received`, with its error and `_skipped` counts cleared, and a fresh place at the store: no attempts counted, due at once |
 | Defer | `error` | `deferred`, keeping its error. Nothing happens to it until it is retried |
 
 A Retry runs every step after the store again, with the workspace's current

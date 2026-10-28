@@ -386,24 +386,34 @@ Each entry of Aidbox's answer becomes the item's outcome:
 | Aidbox answers | outcome | kind |
 |---|---|---|
 | `2xx` | sent | — |
-| a reference to a resource it does not have | wait | `sender/reference_missing`; the message names the reference |
+| a reference to a resource it does not have | wait | `sender/reference_missing`; the message names every missing reference |
 | `409` with an edit conflict | wait | `sender/edit_conflict` |
 | `5xx` | retry | `sender/aidbox_unreachable` |
 | any other refusal | rejected | `sender/aidbox_rejected` |
+
+The message of a refusal lists every error Aidbox reported for the resource,
+not only the first, each as `<path>: <diagnostics> [<codes>]`, where the codes
+are Aidbox's issue type and schema, for example
+`3 errors: Patient.gender: Invalid type for the field. Expected 'code', but got 'decimal' [invalid-type, schema-id:Patient]; Patient.foo: Unrecognized property 'foo' [unknown-key]; …`.
+The list is cut at 2,000 characters, and then ends
+`… and <n> more`. A resource waits for a missing reference only when every
+error is a missing reference; one with another error as well is rejected, since
+the reference arriving would not fix it.
 
 A request that fails as a whole — a timeout, a network error, a redirect, a
 `5xx`, `408`, `425` or `429` — answers `retry` with `sender/aidbox_unreachable` for its
 items; any other `4xx`, such as `401`, answers `rejected` with
 `sender/aidbox_rejected`. The requests after a failed one in the same group are
 not sent, and their items wait with `sender/not_attempted`. With
-`validateFirst`, a resource `$validate` rejects is rejected, and the other
-resources of its unit wait with `sender/unit_rejected`.
+`validateFirst`, a resource `$validate` rejects is rejected, with every error
+`$validate` reported for it in the same form, and the other resources of its
+unit wait with `sender/unit_rejected`.
 
 A reference that Aidbox does not have yet only waits: the item is tried again
 every `retryDelayMs` until the referenced resource arrives, counting nothing.
 Such items keep their unit at `processed`. The dashboard's sender panel counts
 the waiting items by kind, and a unit's page shows each item's last error,
-whose message names the missing reference.
+whose message names every missing reference.
 
 To send a resource again even though it did not change, forget its fingerprint
 and retry the unit that produces it — `forgetDelivered` and `retryUnits` in
@@ -413,4 +423,7 @@ Four environment variables tune the requests: `INTERBOX_AIDBOX_MAX_BODY_BYTES`
 (8 MiB by default), `INTERBOX_AIDBOX_MAX_ENTRIES_PER_REQUEST`,
 `INTERBOX_AIDBOX_CONCURRENCY` (4 by default) and
 `INTERBOX_AIDBOX_REQUEST_TIMEOUT_MS` (none by default; the cycle's deadline
-still stops a request that hangs).
+still stops a request that hangs). A cycle's resources are split over up to
+`INTERBOX_AIDBOX_CONCURRENCY` requests sent at the same time, about the same
+size and at least 50 resources each where the cycle allows it; resources joined
+by a reference stay in order.
