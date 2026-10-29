@@ -34,7 +34,7 @@ registers a pipeline or a mapper through them, naming each one.
 
 | method | what it adds |
 |---|---|
-| `.source(source)` | where inputs come from: `mllpSource`, `webhookSource`, or `fromPipeline` (see [Bridges](#bridges)) |
+| `.source(source)` | where inputs come from: `mllpSource`, `webhookSource`, your own `defineSource()` (see [Your own source](#your-own-source)), or `fromPipeline` (see [Bridges](#bridges)) |
 | `.step(step)` | a step, before or after the store. Repeatable |
 | `.store(postgresStore({ codec }), options?)` | the store, exactly once. See [The store](#the-store-and-its-options) |
 | `.sender(sender)` | the sender, which ends the chain: `aidbox()`, your own `defineSender()`, or `intoPipeline()` |
@@ -240,6 +240,75 @@ it does is in [Steps, store and senders](stages.md#the-store).
 The engine creates declared indexes when it loads the pipeline: in place on a
 new pipeline, concurrently on one that already holds units. It never drops one,
 so removing an attribute from `index` leaves its index in place.
+
+## Your own source
+
+When the input is neither MLLP nor an HTTP POST, define the source yourself
+with `defineSource` from `@health-samurai/interbox/chain`. It returns a
+function that takes the source's config, and a pipeline reads it like any
+other source:
+
+```ts
+import { env, type Str } from "@health-samurai/interbox";
+import { defineSource, defineState, pipeline, postgresStore } from "@health-samurai/interbox/chain";
+
+interface LabFeedConfig {
+  url: Str;
+  pollIntervalMs: number;
+}
+
+const cursor = defineState<string>("lab-feed.cursor");
+
+const labFeed = defineSource<"lab-feed", LabFeedConfig, string>({
+  type: "lab-feed",
+  kind: "pull",
+  start: async ({ url }, { receive, state, signal }) => async () => {
+    const after = (await state(cursor).get("last")) ?? "";
+    const res = await fetch(`${url}?after=${encodeURIComponent(after)}`, { signal });
+    for (const result of (await res.json()) as { id: string; message: string }[]) {
+      state(cursor).set("last", result.id);
+      await receive(result.message);
+    }
+  },
+});
+
+pipeline("lab-results")
+  .source(labFeed({ url: env("LAB_FEED_URL"), pollIntervalMs: 60_000 }))
+  .store(postgresStore({ codec: "text" }))
+  .sender(/* ... */);
+```
+
+A source is one of two kinds:
+
+| kind | you give | the engine |
+|---|---|---|
+| push, the default | `run(config, ctx)`, which listens or loops until `signal` aborts | runs it once. When `run` returns on its own, the source has finished: it shows as `exited` and is not restarted until the next workspace reload. A listener that only opens a socket must still await `signal` before it returns |
+| `"pull"` | `start(config, ctx)`, which returns a `poll` function | calls `start` once, then `poll` at once and again every `pollIntervalMs` of the config: 30 s when the config sets none, never more often than every second. Prefer it to a loop in `run` for anything that polls |
+
+The context:
+
+- **`receive(input)`** runs the steps before the store on one input and
+  commits the units they make, in one transaction. It resolves with
+  `{ received, skipped }` once they are stored, and that is the moment to
+  acknowledge the input upstream. It rejects when the input is refused, for
+  instance when a step throws, and then nothing of it is stored; the refusal
+  counts in the pipeline's refusals like a refused MLLP or webhook input.
+- **`state(handle)`** is the pipeline's [state](units-and-state.md). Its
+  `set` and `del` are buffered and written by the next `receive`, in that
+  input's transaction, so a cursor set before `receive` advances only if the
+  input is stored. A refused `receive` drops them.
+- **`signal`** aborts when the engine stops the source, at shutdown or on a
+  workspace reload. Pass it to `fetch` and stop listening when it aborts. An
+  error the source throws after the stop ends it as stopped; an error thrown
+  before is a crash, and the engine restarts the source after a backoff.
+
+The config may hold `env()` references; `run` and `start` get it with them
+resolved, and an unset variable stops the workspace from loading. `type` names
+the source in the dashboard and follows the pipeline name rules.
+
+The engine runs one copy of each source per engine instance. Run a single
+instance for a pipeline whose source polls, or two instances read the same
+input twice.
 
 ## Bridges
 

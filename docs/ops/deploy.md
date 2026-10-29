@@ -62,7 +62,9 @@ from how the engine works, so they are documented here rather than in the chart:
 - **Migrations run on boot.** An upgrade is just a new image tag; the pod
   migrates the database as it comes up. The engine also self-creates its
   `interbox` database when the `DATABASE_URL` user has `CREATEDB` (otherwise
-  pre-create it — see PREREQUISITES).
+  pre-create it — see PREREQUISITES). A database that already exists is used as
+  it is. On Databricks Lakebase the engine logs in as a service principal: see
+  [Databricks Lakebase](lakebase.md).
 
 How the pod gets that workspace — which branch it tracks, how pipeline changes
 reach a running engine, and what the dashboard is allowed to change — is

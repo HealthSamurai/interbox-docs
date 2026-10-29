@@ -354,8 +354,11 @@ export async function dailyReport(input: { day: string }, ctx) {
 ```
 
 An action gets the request's JSON body as `input`, and a context with `dbUrl`,
-`log(message)` and `signal`. `signal` aborts at the deadline, 15 minutes unless
-`WORKSPACE_ACTION_TIMEOUT_MS` sets it; an action that ignores it keeps running.
+`log(message)` and `signal`. Build connections with `postgresConfig(ctx.dbUrl)`
+from `@health-samurai/interbox/postgres`, so the action also logs in on
+[Databricks Lakebase](lakebase.md). `signal` aborts at
+the deadline, 15 minutes unless `WORKSPACE_ACTION_TIMEOUT_MS` sets it; an action
+that ignores it keeps running.
 
 | route | does |
 |---|---|

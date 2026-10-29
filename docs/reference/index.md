@@ -113,10 +113,12 @@ types, and the payload helpers below — but the 2.0 engine loads only the
 pipelines in `ChainRegistry`. A workspace that registers a pipeline with the
 root's `pipeline()` or a mapper with `defineMapper` is refused: the 2.0 engine
 does not load it, and the failure names each one. A 2.0 pipeline's source is MLLP (`mllpSource`),
-HTTP (`webhookSource`) or another pipeline (`fromPipeline`), all from
-`@health-samurai/interbox/chain`. A pipeline that needs any other source, an
-SFTP drop or a source you define with `defineSource`, stays on a 1.x engine
-for now.
+HTTP (`webhookSource`), another pipeline (`fromPipeline`) or a source you define
+with the `defineSource` of `@health-samurai/interbox/chain`, which takes the
+same shape as the 1.x one with `receive` in place of `writeBatch`, and ends a
+push source when its `run` returns (see
+[Your own source](../concepts/pipelines.md#your-own-source)). A pipeline that
+reads an SFTP drop stays on a 1.x engine for now.
 
 ### Sources
 

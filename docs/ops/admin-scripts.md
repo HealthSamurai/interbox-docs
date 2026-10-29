@@ -53,8 +53,9 @@ deadlocks with it. Run the call again once the engine has moved on.
 ```ts
 import { Client } from "pg";
 import { units } from "@health-samurai/interbox/admin";
+import { postgresConfig } from "@health-samurai/interbox/postgres";
 
-const client = new Client({ connectionString: process.env.DATABASE_URL });
+const client = new Client(postgresConfig());
 await client.connect();
 try {
   const page = await units(client, { pipeline: "adt-feed", status: "error" });
@@ -64,12 +65,17 @@ try {
 }
 ```
 
+`postgresConfig()` reads `DATABASE_URL` and the database login settings the
+engine uses, so the script also connects to a
+[Databricks Lakebase](lakebase.md) database. Pass a URL to connect somewhere
+else.
+
 From a pool, check out one client and release it after:
 
 ```ts
 import { Pool } from "pg";
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new Pool(postgresConfig());
 const client = await pool.connect();
 try {
   await units(client, { pipeline: "adt-feed" });

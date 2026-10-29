@@ -19,6 +19,7 @@
 
 * [System Requirements](ops/sizing.md)
 * [Deployment](ops/deploy.md)
+* [Databricks Lakebase](ops/lakebase.md)
 * [The Workspace](ops/workspace.md)
 * [Operating Pipelines](ops/operating.md)
 * [Admin Scripts](ops/admin-scripts.md)
