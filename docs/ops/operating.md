@@ -275,9 +275,9 @@ sender is done with an item, the record of it shows how it finished:
 An item listed as waiting that has finished by the time you pick it is shown
 as finished.
 
-Finished items are kept for `INTERBOX_DONE_ITEMS_RETENTION_DAYS` days, 7 by
-default, and then purged. It takes from one hour, `0.042`, to `36500` days, and
-`0` keeps them for good. A unit at `sent` or `error`
+Finished items are kept for the pipeline's `retention`, `"7d"` by default, and
+then purged. It takes from `"1h"` to `"36500d"`, and `"forever"` keeps them for
+good (see [Pipelines](../concepts/pipelines.md#the-chain)). A unit at `sent` or `error`
 with no item left says that no record of its resources is kept any more: they
 were purged after the retention period, or it never had any. When the items
 cannot be read the tab says so, and when the inspector itself cannot load it
@@ -299,8 +299,9 @@ On a unit at `processed`, the Sender items card offers **Delete selected** and
 
 A tree of the pipelines' sources, in the order of the Pipelines page, each
 followed by its senders, refreshed every 10 seconds. A source's row shows its
-kind — `mllp` or `webhook` for a pipeline that listens, `bridge` for one fed by
-`fromPipeline()` — its address or upstream, how many senders its breakdown lists
+kind (`mllp` or `webhook` for a pipeline that listens, `file-drop` for one
+that polls a feed, `bridge` for one fed by `fromPipeline()`), its address, feed
+or upstream, how many senders its breakdown lists
 (see below), and its health:
 
 | health | when |
@@ -315,9 +316,9 @@ Volume are that sender's own:
 
 | part | what it shows |
 |---|---|
-| Kind | `mllp`, `webhook` or `bridge` |
+| Kind | `mllp`, `webhook`, `file-drop` or `bridge` |
 | Format | `HL7v2` for an MLLP source, MLLP being HL7v2's framing, or for one whose store declares the `message_type` and `event_type` attrs `hl7v2Parser()` sets; otherwise `—` |
-| Listens on / Fed from | the host and port the source listens on, or the pipeline a bridge is fed from |
+| Listens on / Polls / Fed from | the host and port the source listens on, the feed a file-drop source polls, or the pipeline a bridge is fed from |
 | Instances | each fresh instance that runs the source, with the state of its source stage (`starting`, `running`, `backoff`, `exited`). A bridge's instances carry no state |
 | Refused at ingest | the same line as on the Pipelines page — see [Refused inputs](#refused-inputs) |
 | Status mix | the units created in the last 24 hours, counted by the status each is at now, and each status's share of them |
@@ -326,7 +327,9 @@ Volume are that sender's own:
 
 The address is the source's configuration with its `env()` values resolved. A
 webhook source takes no host and listens on every interface, shown as `[::]`.
-No secret is shown. **Units** opens the pipeline's units.
+A file-drop feed is shown as `sftp://host:port/dir`, `s3://bucket/prefix`,
+`gs://bucket/prefix` or `azure://account/container/prefix`, with no user name,
+endpoint or region. No secret is shown. **Units** opens the pipeline's units.
 
 **The sender breakdown** appears for a pipeline whose store declares a `btree`
 index on `sending_facility` in `index`; without one there is none. It lists the
@@ -370,8 +373,8 @@ so the API must run on the same host as the engine:
 | anything else, such as a network address or another host name | nothing: the request answers `400` |
 
 A port outside 1 to 65535, `0` included, also answers `400`, and so does a
-webhook or bridge source: a webhook's secret never leaves the engine, and a
-bridge listens on nothing. A source whose instance does not report it
+webhook, file-drop or bridge source: a webhook's secret never leaves the
+engine, and a file-drop or bridge source listens on nothing. A source whose instance does not report it
 `running` answers `409`; try again once it runs. A refused request sends
 nothing.
 
@@ -482,8 +485,11 @@ missing or changed.
   parts of 1000.
 - **Leftover items are cleared first.** A unit the sender rejected may still
   have items that another send held at that moment. Both actions delete those
-  before they change the unit. An item a send still holds stays, and the unit is
-  left unchanged as `item_in_flight`.
+  before they change the unit, up to 10,000 per request. An item a send still
+  holds stays, and the unit is left unchanged as `item_in_flight`. A Retry that
+  leaves a unit with items after those 10,000 leaves it unchanged as `items_left`; a Defer goes
+  ahead. Either way the sender drops the rest, never sending an item of a unit at
+  `error` or `deferred`.
 
 Each answers the units it moved, and the units it left unchanged with a reason:
 
@@ -492,6 +498,8 @@ Each answers the units it moved, and the units it left unchanged with a reason:
 | `status` | the unit is at a status this action does not take; the answer names it |
 | `busy` | another transaction holds the unit, or its place at the store: the engine is working on it, or another action is. Try again |
 | `item_in_flight` | a send holds one of the unit's items. Try again once it settles |
+| `items_left` | the unit still had waiting items after the call deleted 10,000 across all its units; the sender drops the rest. Try again shortly |
+| `incomplete_input` | Retry only: the unit is at `engine/copy_incomplete`, one of the units a staged copy made before it stopped. Retrying it alone would send part of an input, so deliver it again as a new delivery or under a new name |
 | `not_found` | no unit with that id in this pipeline |
 
 ### Deleting waiting items
@@ -503,7 +511,8 @@ its waiting items closes it.
 
 - **Only a unit at `processed`.** Any other status is refused with
   `unit is not processed` and the unit's status.
-- **All, or the ones you name**, up to 1000 item ids.
+- **All, or the ones you name**, up to 1000 item ids. All deletes up to 10,000
+  per request and answers `more` while waiting items remain.
 - **Items a send holds right now are `kept`.** A named item already gone,
   delivered or deleted meanwhile, is `missing`. The rest are deleted.
 - **When no item is left, the unit becomes `sent`.**
@@ -559,6 +568,68 @@ stages, its pipelines' sources, the inputs it refused, and its reload error.
   workspace again when a new commit arrives, on **Sync now**, or on `SIGHUP` —
   see [The Workspace](workspace.md).
 
+- **Large inputs and fan-outs are staged in Postgres.** An input whose steps
+  before the store make more than 1,000 rows or 4 MiB, such as a big file, and a
+  unit whose steps after the store give more than that, are first written to
+  Postgres gzipped, then copied into units or sender items in parts of that
+  size, each in a short transaction. Nothing goes to the engine's local disk.
+  - **Space.** The staged copy takes database space, a fraction of the rows'
+    size, until its last part is copied, normally within seconds. One left by a
+    crash is copied on or deleted by the stored-files sweep. The log names each
+    staged input and unit with its rows, parts and timings.
+  - **Vacuum.** Copying deletes each staged part as it goes, so a big delivery
+    leaves dead rows in that pipeline's `unit_file_chunk` partition until
+    autovacuum clears them. After the first large deliveries, check that
+    autovacuum keeps up there (`n_dead_tup` in `pg_stat_user_tables` for
+    `interbox.unit_file_chunk__<pipeline>`, `-` in the name written as `_`).
+  - **All at once.** The units a copy makes wait until its last part is copied,
+    then all become due at once; the dashboard counts them as `copying`, not
+    `ready`. A unit's items are not sent before its last part either. Webhooks
+    get each part's `received` events as the part commits, before the copy
+    ends; a copy that then stops sends `error` for the same units.
+  - **Busy while copying.** Retry, an item delete and a drop of pending items
+    leave a unit whose copy is pending unchanged as `busy`.
+  - **Refused before staging.** A row Postgres would refuse is refused before
+    anything is staged, the same at any size. An input is refused as
+    `store_misfit` for an indexed attr longer than 2,684 bytes as Postgres
+    writes it, an `orderAt`
+    that is neither a `Date` nor text a `Date` parses, or text Postgres cannot
+    hold. A unit ends at `engine/write_failed` for an item key longer than
+    2,684 bytes or holding NUL.
+  - **A copy no retry can finish stops.** A part Postgres refuses as data, or
+    one that cannot be read back, stops the copy, and none of the work goes on
+    half done. The units it made so far end at `engine/copy_incomplete`, with
+    the part, the staged file and the error in their message and in an ERROR
+    log line, and a file-drop delivery is judged `partial`. Retry refuses them
+    as `incomplete_input`: deliver it again as a new delivery or under a new name. On S3 an identical re-upload keeps its ETag,
+    the file's version, and is skipped as already read; SFTP, GCS and Azure give
+    every upload a new version. A unit whose outputs were being copied ends at
+    `engine/write_failed` and its items are dropped unsent; retry it as any
+    failed unit.
+  - **Other failures wait and try again.** A lost connection, a timeout, a lock
+    or a full disk never stops a copy: each failed try logs an ERROR with the
+    try count and the next try's time, and the copy is tried again after 1, 2
+    and 4 minutes, then every 5 minutes, until it copies. A restart keeps the
+    wait. Meanwhile later inputs to the pipeline are refused as `copy_pending`.
+  - **Keep a bridging pipeline until its copies end.** Before you remove or
+    rename a pipeline that sends into another with `intoPipeline()`, check that
+    the receiving pipeline shows no `copying` units. A copy left behind holds
+    its units there, and every later unit of that pipeline waits behind them,
+    with no admin action to clear it. If the pipeline was removed anyway, add
+    it back until its copies finish or are undone. The engine logs a warning at
+    boot for each pipeline no longer declared that still has copies pending.
+- **A step after the store holds a unit's outputs in memory**, except in a
+  `read: "delivery"` pipeline, whose outputs stream into the staged copy. Until
+  the step ends, every output it gives for one unit is in the engine's heap:
+  about 1 KB per output, so a unit that fans out into 500,000 items takes about
+  500 MiB.
+- **Whole deliveries take database space.** A file-drop feed with `read: "delivery"`
+  copies every file of a delivery, as received, into Postgres, with no limit on its size. The
+  files stay until the pipeline's `retention` has passed after their unit is `sent` or
+  `skipped`, 7 days by default, and `"forever"` keeps them for good. A unit in `error` or `deferred` keeps its files, so it can be retried. Size
+  the database for the deliveries of that many days. The unit and its file list stay after the
+  deletion.
+
 ## Refused inputs
 
 An input refused before the store left nothing behind: no unit, no stored value.
@@ -569,6 +640,8 @@ a feed whose every input is refused can be told apart from one that went quiet.
 |---|---|---|
 | `too_large` | was an MLLP frame or a request body over the source's `maxBytes` | MLLP: the connection is dropped. HTTP: `413` |
 | `store_misfit` | produced a row the store's codec cannot hold | MLLP `AE`, HTTP `500` |
+| `source_error` | made the source's own read mark or state write fail to store; MLLP and webhook sources never raise it | the source retries |
+| `copy_pending` | came while an earlier input's staged rows were not all copied yet | the source retries |
 | `step_error` | made a step before the store throw, or answer `notReady` | MLLP `AE`, HTTP `500` |
 | `not_ready` | made a step before the store read a reference table that is not ready, or throw `NotReady` | MLLP `AE`, HTTP `500` |
 | `timeout` | passed its deadline, in a step or in a statement | MLLP `AE`, HTTP `500` |
@@ -590,7 +663,6 @@ a feed whose every input is refused can be told apart from one that went quiet.
 
 | variable | default | what it sets |
 |---|---|---|
-| `INTERBOX_DONE_ITEMS_RETENTION_DAYS` | `7` | how many days the record of finished sender items is kept, see [Unit](#unit). Unset or blank uses the default. A plain decimal number of days from one hour, `0.042`, to `36500` is taken as given, a fraction included. `0` keeps the record forever and logs a warning saying so. Any other value, such as one under an hour or over `36500`, a negative one, an exponent like `1e3`, a hex number or text, uses the default and logs a warning |
 | `INTERBOX_API_READ_TIMEOUT_MS` | `10000` | the time budget, in milliseconds, of one request behind the Dashboard's totals and error kinds and the Pipelines, Units and Unit pages, and of one action. Past it the request answers `504`. A value that is not a whole number above zero uses the default. The dashboard waits 20 seconds for most of these reads, so above that a slow read shows there as failed rather than as `504` |
 | `INTERBOX_INSTANCE_ID` | the host name | the instance's id on the Instances page. Give each engine its own |
 | `INTERBOX_STOP_GRACE_MS` | see [Updating the Engine](updating.md) | how long a stop lets started work finish; [The Workspace](workspace.md) covers it during a hot reload |

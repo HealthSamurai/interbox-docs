@@ -324,7 +324,7 @@ const newerOnly = defineStep("newer-only", (msgs: Batch<Admit>, ctx: StepContext
 
 | where | they commit | they are dropped when |
 |---|---|---|
-| a step before the store | with the input's transaction | the input is refused |
+| a step before the store | with the input, when it commits | the input is refused |
 | a step after the store | with the take's result, even when one of its units fails | the take passes its deadline, a stop ends it, or another worker took one of its units over; when Postgres refuses the values, their keys are deleted instead and the units' results still commit |
 
 A `set` or `del` made after the step's work has finished, from a promise no one
@@ -484,12 +484,10 @@ const providerName = defineStep("provider-name", (claims: Batch<Claim>) =>
 - **After the store**, each call is a read-only transaction of its own, under a
   statement timeout of what is left of the take's deadline and a lock timeout
   of 2 seconds. Once `ctx.signal` has fired, a call throws.
-- **Before the store**, a call runs in the input's own transaction, inside a
-  savepoint with a lock timeout of 2 seconds, and the savepoint is rolled back
-  when the call ends. A failed lookup never leaves the input's transaction
-  unusable, and the table is not kept locked for the rest of the input. The
-  input's own writes, and its commit, wait until no call is running, so a call
-  a step did not await cannot roll them back.
+- **Before the store** the same holds, under what is left of the input's
+  deadline: the steps before the store run before the input's transaction
+  opens, so a lookup never holds that transaction open or keeps the table
+  locked.
 
 ### Not ready
 

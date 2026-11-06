@@ -6,7 +6,17 @@ lockstep: the **engine image** (`healthsamurai/interbox` on Docker Hub) and the
 Updating means moving the image to a new tag and keeping the workspace's SDK in
 a compatible range. Database migrations run automatically on boot; one that
 builds an index on a large delivery queue (`sender_item`) makes that boot take
-longer, in proportion to the backlog.
+longer, in proportion to the backlog. Moving to the per-pipeline `retention`
+rebuilds the index of finished sender items (`sender_item_done`) the same way; it
+holds at most the retention window (7 days by default) of items, and it blocks
+inserts into that table for the build, which only an older engine still running during a
+rolling deploy would notice.
+
+`INTERBOX_DONE_ITEMS_RETENTION_DAYS` is removed and ignored. Every pipeline keeps
+finished items and stored delivery files for 7 days unless it sets `retention`. A
+deployment that relied on a longer value must declare `retention` on its
+pipelines and deploy that workspace with the engine, because the first sweep after
+boot applies 7 days.
 
 Before updating, read the
 [release notes](https://github.com/HealthSamurai/interbox-workspace/releases) of

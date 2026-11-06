@@ -207,10 +207,9 @@ pipeline keeps:
 - **a record of each of its sender items once it is finished**, in
   `interbox.sender_item_done`: a short row for an item that was sent, dropped
   or deleted, and the item's payload as well only for one the sender rejected.
-  Interbox purges these rows on its own, after
-  `INTERBOX_DONE_ITEMS_RETENTION_DAYS` days — 7 by default, anything from one
-  hour (`0.042`) to `36500`, or `0` to keep them for good — so they cost a few
-  days of items, not your whole history. It also purges delivered webhook
+  Interbox purges these rows on its own, after the pipeline's `retention` —
+  7 days by default, anything from `"1h"` to `"36500d"`, or `"forever"` to keep
+  them for good — so they cost a few days of items, not your whole history. It also purges delivered webhook
   outbox rows on its own, after `WEBHOOK_RETENTION_DAYS` days (see
   [Webhooks](../concepts/webhooks.md#retention)).
 

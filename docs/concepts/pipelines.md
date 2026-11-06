@@ -20,7 +20,7 @@ pipeline("adt")
   .sender(aidbox({ url: env("AIDBOX_URL"), auth: { kind: "bearer", token: env("AIDBOX_TOKEN") } }));
 ```
 
-`pipeline(name)` declares the pipeline and registers it in one call; the calls
+`pipeline(name, options?)` declares the pipeline and registers it in one call; the calls
 chained on it complete the declaration. The names in the examples below come
 from `@health-samurai/interbox/chain`, except the HL7v2 helpers, from `/hl7v2`,
 and the Aidbox ones, from `/aidbox`.
@@ -31,6 +31,14 @@ the pipelines in `ChainRegistry`, and refuses to load a workspace that
 registers a pipeline or a mapper through them, naming each one.
 
 ## The chain
+
+`pipeline(name, { retention })` takes one option. `retention` is how long the
+pipeline keeps its finished sender items and, for `read: "delivery"`, its stored
+delivery files: a duration such as `"30d"` or `"12h"`, from `"1h"` to `"36500d"`,
+or `"forever"`. It is `"7d"` when unset, and a value out of the range throws when
+the pipeline is declared. Interbox stores the value at load, so a changed
+`retention` applies at the next sweep. A pipeline removed from the workspace keeps
+the retention it last declared; one that never had a value stored gets 7 days. See [Units and state](units-and-state.md#items).
 
 | method | what it adds |
 |---|---|
@@ -141,7 +149,7 @@ a failure does.
 | a throw | fails the whole input: nothing of it is stored, and the sending side gets an error and resends | fails the row's unit only |
 | `skip` | records a `skipped` unit with its attributes and no stored value; the input is still acknowledged | ends the unit at `skipped`; after a `flatMap` split, counts a skipped item and the unit goes on |
 | `notReady` | not allowed: fails the input, like a throw | the unit stays at the store and is taken again after the delay, at least a second; each take starts from its stored attrs, and its queue row records the hold's reason for display |
-| `mapAll` | called once per part of up to 1000 rows; an `Error` in any row's place fails the input | called once for the take's rows; a throw, or a result of the wrong length, fails every unit in the call |
+| `mapAll` | called once per part of up to 1000 rows; an `Error` in any row's place fails the input | called once for the take's rows, or, with `read: "delivery"`, once per part of up to 1000 rows of the delivery; a throw, or a result of the wrong length, fails every unit in the call |
 
 A throw inside a method's function after the store is classified: a
 `domainError` ends the unit at `error`, and any other throw is retried. A throw
@@ -167,6 +175,7 @@ input. A method's function gets a `RowContext`, which is its row's.
 | `translate(map, code)`, `translateFor(context, code)`, `conceptMapFor(context)` | yes | yes |
 | `signal` | an `AbortSignal` fired at the work's deadline and when a stop's grace period ends | the same |
 | `units.count(filter?)`, `units.find(query?)` | yes | yes |
+| `files.open(file)` | yes | yes |
 | `state(handle)` | yes | — |
 | `sender.queued(keys)` | yes | — |
 | `unit` | — | `{ id, attrs, createdAt }`; `undefined` before the store |
@@ -249,20 +258,18 @@ function that takes the source's config, and a pipeline reads it like any
 other source:
 
 ```ts
-import { env, type Str } from "@health-samurai/interbox";
-import { defineSource, defineState, pipeline, postgresStore } from "@health-samurai/interbox/chain";
-
-interface LabFeedConfig {
-  url: Str;
-  pollIntervalMs: number;
-}
+import { env } from "@health-samurai/interbox";
+import { defineSource, defineState, pipeline, postgresStore, type SourceRunContext } from "@health-samurai/interbox/chain";
 
 const cursor = defineState<string>("lab-feed.cursor");
 
-const labFeed = defineSource<"lab-feed", LabFeedConfig, string>({
+const labFeed = defineSource({
   type: "lab-feed",
   kind: "pull",
-  start: async ({ url }, { receive, state, signal }) => async () => {
+  start: async (
+    { url }: { url: string; pollIntervalMs: number },
+    { receive, state, signal }: SourceRunContext<string>,
+  ) => async () => {
     const after = (await state(cursor).get("last")) ?? "";
     const res = await fetch(`${url}?after=${encodeURIComponent(after)}`, { signal });
     for (const result of (await res.json()) as { id: string; message: string }[]) {
@@ -288,7 +295,7 @@ A source is one of two kinds:
 The context:
 
 - **`receive(input)`** runs the steps before the store on one input and
-  commits the units they make, in one transaction. It resolves with
+  commits the units they make. It resolves with
   `{ received, skipped }` once they are stored, and that is the moment to
   acknowledge the input upstream. It rejects when the input is refused, for
   instance when a step throws, and then nothing of it is stored; the refusal
@@ -302,7 +309,11 @@ The context:
   error the source throws after the stop ends it as stopped; an error thrown
   before is a crash, and the engine restarts the source after a backoff.
 
-The config may hold `env()` references; `run` and `start` get it with them
+The config's type is the one `run` or `start` declares for its first
+parameter, and the rows' type is the `Row` of `SourceRunContext<Row>` on the
+second, as above; type arguments, `defineSource<"lab-feed", Config, string>`,
+say the same. A pipeline may pass any string of the config as an `env()`
+reference, though not a number; `run` and `start` get the config with them
 resolved, and an unset variable stops the workspace from loading. `type` names
 the source in the dashboard and follows the pipeline name rules.
 
@@ -339,7 +350,7 @@ retried on its own.
 - **Each item of the first pipeline becomes a unit of the second.** When a unit
   of `bulk-files` finishes its steps, its items are written into the store of
   `bulk-resources` as new `received` units, and the unit of `bulk-files`
-  becomes `sent`, all in one transaction. Each item's value must fit the second store's codec;
+  becomes `sent`. Each item's value must fit the second store's codec;
   if one does not, the first pipeline's unit ends at `error` with
   `engine/codec_mismatch`.
 - **The second pipeline has no steps before its store.** Nothing could run
@@ -353,9 +364,9 @@ retried on its own.
   matched by `fromPipeline("a")` in `b`. The row type written in
   `fromPipeline<Row>` is not checked against what the first pipeline sends; the
   codec is checked when the units are written.
-- **Size.** The new units are written in the one transaction that finishes the
-  first unit, so one unit that fans out into a very large number of items makes
-  one very large transaction.
+- **Size.** A unit may fan out into hundreds of thousands of items. Its steps
+  hold them all in memory until they end, within the unit's deadline. A step after the
+  store of a `read: "delivery"` source streams its outputs instead.
 
 ## `ChainRegistry`
 

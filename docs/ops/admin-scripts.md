@@ -196,8 +196,12 @@ Returns units at `error`, `deferred` or `sent` to `received`, with their error
 and `_skipped` counts cleared and a fresh place in the queue; the pipeline runs
 them again from the store. Items a unit left in the delivery queue are deleted first. It answers
 `{ retried, unchanged }`, and each unchanged unit names its reason: `status`
-(with the unit's status), `busy`, `item_in_flight` — one of its items is being
-delivered right now — or `not_found`.
+(with the unit's status), `busy`, `item_in_flight` (one of its items is being
+delivered right now), `items_left` (the call deleted 10,000 waiting items across
+all its units and this one still had some, which the sender drops, so call again
+shortly), `incomplete_input` (the unit is at `engine/copy_incomplete`, made by a
+staged copy that stopped part-way, so retrying it alone would send part of an
+input; deliver it again as a new delivery or under a new name) or `not_found`.
 
 ```ts
 const { retried, unchanged } = await retryUnits(client, { pipeline: "adt-feed", ids: ["1042", "1043"] });

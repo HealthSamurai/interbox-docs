@@ -77,9 +77,9 @@ the engine writes each item into the pipeline's sender queue, in the order the
   leaves the sender queue keeps a summary record: its key, its resource type
   and id, how it finished and why, and when. Only an item the sender rejected
   keeps its body as well; a delivered, dropped or deleted one does not. The
-  record is purged after `INTERBOX_DONE_ITEMS_RETENTION_DAYS` days, 7 by
-  default, from one hour up to `36500`, or never at `0` (see
-  [Operating Pipelines](../ops/operating.md#environment)). The Unit page lists
+  record is purged after the pipeline's `retention`, 7 days by default,
+  from one hour up to `36500` days, or never at `"forever"` (see
+  [Pipelines](pipelines.md#the-chain)). The Unit page lists
   the items still waiting, each with its tries, its next try and its last
   error, and its FHIR resources tab lists both the waiting and the finished
   items carrying a FHIR resource, each finished one with how and when it

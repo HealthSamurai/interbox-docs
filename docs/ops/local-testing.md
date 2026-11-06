@@ -37,7 +37,7 @@ A throwaway in-cluster Postgres is enough (its `postgres` superuser has
 
 ```sh
 kubectl create deploy interbox-pg --image=postgres:18-alpine
-kubectl set env deploy/interbox-pg POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres POSTGRES_DB=postgres
+kubectl set env deploy/interbox-pg POSTGRES_USER=postgres POSTGRES_HOST_AUTH_METHOD=trust POSTGRES_DB=postgres
 kubectl expose deploy/interbox-pg --port=5432
 ```
 
@@ -119,9 +119,8 @@ config:
   AIDBOX_URL: "http://aidbox.placeholder.svc:8080"     # no Aidbox locally
   INTERBOX_WORKSPACE_GIT_URL: "https://github.com/HealthSamurai/interbox-workspace"
 secrets:
-  data:
-    DATABASE_URL: "postgres://postgres:postgres@interbox-pg:5432/interbox?sslmode=disable"
-    AIDBOX_CLIENT_SECRET: "placeholder"
+  DATABASE_URL: "postgres://postgres@interbox-pg:5432/interbox?sslmode=disable"
+  AIDBOX_CLIENT_SECRET: "placeholder"
 ingress:
   enabled: true
   className: nginx

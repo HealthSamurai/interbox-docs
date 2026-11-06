@@ -5,44 +5,78 @@ you run.
 
 ## Signed container images
 
-Images are signed with [Cosign](https://docs.sigstore.dev/), keyless: there is no
-public key to download — you check the identity of the workflow that built the image:
+Health Samurai signs Interbox images with [Cosign](https://docs.sigstore.dev/).
+
+### Release images
+
+Health Samurai's CI key signs every release image, under a version tag or `latest`. Earlier
+releases carry a keyless signature from the release pipeline that built them, and for those
+you check that workflow's identity instead. This command accepts either:
 
 ```bash
-cosign verify \
+cosign verify --key https://storage.googleapis.com/interbox-signing-keys/cosign.pub \
+  healthsamurai/interbox:latest \
+|| cosign verify \
   --certificate-identity "https://github.com/HealthSamurai/interbox/.github/workflows/publish.yml@refs/heads/main" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   healthsamurai/interbox:latest
 ```
 
-A non-zero exit means the image was not produced by our release pipeline: do not
-deploy it. Releases older than this page are unsigned and fail this check. So do most
-`edge` and `main-<sha>` images: they are development builds, and only release tags are
-guaranteed to be signed.
+A non-zero exit means Health Samurai did not build the image: do not deploy it. Releases
+older than this page are unsigned and fail both checks.
 
-The scan result is attested alongside the signature (`--type vuln`) and re-attested
-nightly for the current release and `edge`. Nightly re-attestations carry the `image-rescan.yml` identity, not `publish.yml`; to
-read when the image was last scanned:
+### Development images
+
+Our CI builds a development image, `edge` or `main-<sha>`, from main between releases and
+signs it with the same key, so the same command verifies it with the tag changed.
+
+A signature says Health Samurai's CI built the image. It does not tell a release
+image from a development image, so to run releases only, deploy a version tag pinned to its
+digest (see [Pinning a digest](#pinning-a-digest)). An admission policy lists the key and the
+earlier release pipeline's identity as alternatives, and either one is enough.
+
+### The CI key
+
+A cloud key management service holds the CI key, and the private half never leaves that
+service. Instead of fetching the public half from the URL on every check, you can pin it:
+save the block below as `cosign.pub` and pass `--key cosign.pub`.
+
+```text
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEfTexAgXJFeZj1C4g/HQ+jpLEypQX
+X5srPnG5tAlaERJaydllk9ZZ1DEEK7uo4remUfsr0PR6P4NABNmqlywMbg==
+-----END PUBLIC KEY-----
+```
+
+We replace the key only if it is compromised, and announce the new one in the release notes.
+If you pinned the old key, replace your copy then.
+
+### Scan attestations
+
+Every signed image also carries its Trivy scan result as an attestation (`--type vuln`),
+made at build time. Each night we scan the current release image and `edge` again and
+attest the result with the CI key. That nightly attestation tells you when an image was
+last scanned:
 
 ```bash
 cosign verify-attestation --type vuln \
-  --certificate-identity "https://github.com/HealthSamurai/interbox/.github/workflows/image-rescan.yml@refs/heads/main" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --key https://storage.googleapis.com/interbox-signing-keys/cosign.pub \
   healthsamurai/interbox:latest | jq -rs 'map(.payload | @base64d | fromjson | .predicate.metadata.scanFinishedOn) | max'
 ```
 
-Verifying `--type vuln` with the `publish.yml` identity is also valid, but returns
-only the build-time attestation — its `scanFinishedOn` is the build date.
+Older nightly attestations carry the `image-rescan.yml` workflow identity instead of the
+key. An older release also has a build-time attestation under the earlier release
+pipeline's identity, whose `scanFinishedOn` is the build date.
 
 ## Vulnerability scanning
 
 Health Samurai scans Interbox images with [Trivy](https://trivy.dev) on every pull
 request, on the release build before any version tag is applied, and nightly against
-the already-published tags. A fixable CRITICAL or HIGH fails the build, and so does a
-leaked credential — the same passes scan the image for secrets.
+the already-published tags. A fixable CRITICAL or HIGH fails the build. So does a leaked
+credential: the same passes scan the image for secrets.
 
-Findings with no available fix are reported rather than blocked. There are no other
-standing exemptions; any exception would carry a written reason and an expiry date.
+A finding with no available fix is reported and does not fail the build. There are no
+other standing exemptions. Any exception would carry a written reason and an expiry date.
 Questions about a specific finding go to security@health-samurai.io.
 
 Run the same scan against any Interbox image:
@@ -63,21 +97,21 @@ docker buildx imagetools inspect healthsamurai/interbox:latest --format '{{ json
 
 The result is keyed by platform, each entry an SPDX document. A digest works in place
 of the tag, and `.Provenance` in place of `.SBOM` for the build provenance. Releases
-older than this page answer `{}` here — they carry provenance but no SBOM.
+older than this page answer `{}` here: they carry provenance but no SBOM.
 
 The same bill of materials in CycloneDX, signature-verified:
 
 ```bash
 cosign verify-attestation --type cyclonedx \
-  --certificate-identity "https://github.com/HealthSamurai/interbox/.github/workflows/publish.yml@refs/heads/main" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --key https://storage.googleapis.com/interbox-signing-keys/cosign.pub \
   healthsamurai/interbox:latest | jq -r '.payload' | base64 -d | jq '.predicate' > interbox-sbom.cdx.json
 ```
 
-The verification verdict prints to the terminal; the file gets the full CycloneDX
-document — around 1.5k components — ready for your vulnerability-management tooling. The same
-bill of materials in CycloneDX is the `--type cyclonedx` attestation above; the
-verify-attestation command prints it.
+If that finds nothing, the release is an older one: replace `--key …` with the two
+`--certificate-…` options from [Release images](#release-images).
+
+The terminal shows whether verification passed, and the file gets the full CycloneDX
+document, around 1.5k components, ready for your vulnerability-management tooling.
 
 ## Pinning a digest
 
@@ -90,8 +124,8 @@ docker buildx imagetools inspect healthsamurai/interbox:latest --format '{{ json
 
 ## Remediation
 
-Health Samurai triages and remediates reported vulnerabilities on a schedule driven
-by CVSS v3.1 severity:
+Health Samurai triages and remediates reported vulnerabilities on a schedule set by
+CVSS v3.1 severity:
 
 | Severity | CVSS v3.1 | Triage | Remediation |
 |---|---|---|---|
@@ -100,8 +134,8 @@ by CVSS v3.1 severity:
 | Medium | 4.0–6.9 | ≤ 7 days | ≤ 90 days |
 | Low | 0.1–3.9 | ≤ 30 days | ≤ 180 days |
 
-Vulnerabilities under active exploitation, or involving exposure of protected health
-information (PHI), are handled as security incidents rather than on the tiers above.
+A vulnerability under active exploitation, or one that exposes protected health
+information (PHI), is handled as a security incident, outside the tiers above.
 
 ## Reporting a security issue
 

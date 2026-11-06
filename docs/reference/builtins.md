@@ -7,7 +7,10 @@ the 2.0 engine does not run them. A 2.0 pipeline takes `mllpSource` and
 [Sources](steps.md#sources-mllpsource-and-webhooksource) — parses HL7v2 with
 the `hl7v2Parser()` step from `@health-samurai/interbox/hl7v2`, and delivers to
 Aidbox with `aidbox()` from `@health-samurai/interbox/aidbox` — see
-[Steps](steps.md). It has no SFTP source and no preprocessors.
+[Steps](steps.md). It reads files dropped into SFTP, Amazon S3, Google Cloud
+Storage or Azure Blob Storage with `fileDropSource` from
+`@health-samurai/interbox/files`, described in [`/files`](file-drop.md), and
+has no preprocessors.
 
 ```ts
 import {
@@ -58,6 +61,26 @@ mllpSource({
 
 ## 1.x: `sftpSource` — SFTP polling source (read-only)
 
+{% hint style="warning" %}
+**Breaking in 2.0.** The 2.0 engine does not run `sftpSource`. A 2.0 pipeline
+reads SFTP with `fileDropSource({ transport: sftp({ … }) })` from
+`@health-samurai/interbox/files`, where each file directly in `dir` is a
+delivery of its own. See [`/files`](file-drop.md) and the table below.
+{% endhint %}
+
+| 1.x `sftpSource` | 2.0 `fileDropSource` with `sftp()` |
+|---|---|
+| `id` | the pipeline's name |
+| `parser` | steps after the source |
+| `pattern` | a step that skips a file by its `file` attr |
+| `pollIntervalMs` | `pollInterval` on `fileDropSource`, a duration such as `"30s"` |
+| `timeoutMs`, `minFileAgeMs` | `timeout` and `minFileAge` on `sftp()`, durations |
+| `maxFileBytes` (default 16 MiB) | `maxFileBytes` on `fileDropSource`, 64 MiB by default, as stored |
+| `maxExpandedBytes`, `maxItems` | removed |
+| `encoding` | an option of the step that splits the file (`csvRows()`, `hl7v2Batch()`); a file in another encoding can be stored with `codec: "bytes"` |
+| `preprocess` | steps before the store, such as `unpack()` |
+| files read oldest modification time first | files read in delivery order |
+
 ```ts
 interface SftpSourceConfig {
   host: Str;
@@ -70,7 +93,9 @@ interface SftpSourceConfig {
   dir: Str;
   pattern?: Str;
   pollIntervalMs?: Num;
+  minFileAgeMs?: Num;
   timeoutMs?: Num;
+  legacyAlgorithms?: boolean;
   maxFileBytes?: Num;
   maxExpandedBytes?: Num;
   maxItems?: Num;
@@ -94,7 +119,7 @@ sftpSource({
   host: env("SFTP_HOST"),
   username: env("SFTP_USERNAME"),
   password: env("SFTP_PASSWORD"),
-  hostKey: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  hostKey: "ssh-ed25519 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
   dir: "/upload",
   pattern: "*.hl7",
   parser: hl7v2Parser(),
@@ -112,11 +137,13 @@ sftpSource({
 | `password` | `Str` | — | exactly one of `password` / `privateKey` |
 | `privateKey` | `Str` | — | the key **content**, not a path — see below |
 | `passphrase` | `Str` | — | only valid together with `privateKey` |
-| `hostKey` | `Str` | required | `SHA256:<base64>` pin, or `accept-unverified` — see below |
-| `dir` | `Str` | required | remote directory; not recursive — subdirectories and symlinks are ignored |
+| `hostKey` | `Str` | required | `<algorithm> SHA256:<fingerprint>` pin, or `accept-unverified`; see below |
+| `dir` | `Str` | required | remote directory; not recursive: subdirectories are ignored, and a symlink is read only when it resolves to a file inside `dir`. A `dir` that does not exist, or is not a directory, fails every poll with an error naming it, and never reads as an empty directory |
 | `pattern` | `Str` | all files | glob over the file name; `*` and `?` only |
 | `pollIntervalMs` | `Num` | `30000` | at least `1000` |
+| `minFileAgeMs` | `Num` | `0` | a file is read only once its size and modification time are unchanged since the previous poll **and** its modification time is at least this long ago; set it when a producer can pause mid-write for longer than `pollIntervalMs`. Measured against the engine's clock, so a server clock running ahead delays files by the difference |
 | `timeoutMs` | `Num` | `30000` | bounds the connect and every remote operation |
+| `legacyAlgorithms` | `boolean` | `false` | also offer the SHA-1 key exchanges `diffie-hellman-group14-sha1` and `diffie-hellman-group-exchange-sha1`, after every modern one, for an older server that offers nothing newer. SHA-1 key exchange is deprecated; turn this on only when the connection otherwise fails with no matching key exchange algorithm |
 | `maxFileBytes` | `Num` | `16777216` (16 MiB) | files listed larger are skipped unread, with a log line — whatever the `preprocess` chain |
 | `maxExpandedBytes` | `Num` | = `maxFileBytes` | caps the total bytes of the messages one file may produce — see below |
 | `maxItems` | `Num` | `10000` | caps the number of messages one file may produce — see below |
@@ -142,7 +169,7 @@ sftpSource({
   host: env("SFTP_HOST"),
   username: env("SFTP_USERNAME"),
   privateKey: env("SFTP_PRIVATE_KEY"),
-  hostKey: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  hostKey: "ssh-ed25519 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
   dir: "/upload",
   parser: hl7v2Parser(),
 });
@@ -155,13 +182,27 @@ starting with `-----BEGIN OPENSSH PRIVATE KEY-----`. PKCS8 PEM
 
 ### Host key verification
 
-`hostKey` is required and has no default: either a `SHA256:<base64>` pin of
-the server's public key, or the literal `"accept-unverified"`.
+`hostKey` is required and has no default: either a pin of the server's
+public key, written `<algorithm> SHA256:<fingerprint>`, or the literal
+`"accept-unverified"`. The algorithm is the key type (`ssh-ed25519`,
+`ecdsa-sha2-nistp256`, `ecdsa-sha2-nistp384`, `ecdsa-sha2-nistp521` or
+`ssh-rsa`), and the fingerprint is the SHA-256 one `ssh-keygen -lf` prints:
 
-To bootstrap a pin, connect once with a placeholder (the all-`A` pin from the
-examples will do): the source fails to start and the error names the
-fingerprint the server actually presented. Verify that fingerprint with
-whoever runs the server, then put it in the config.
+```sh
+ssh-keyscan -t ed25519 sftp.example.com | ssh-keygen -lf -
+# 256 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA sftp.example.com (ED25519)
+```
+
+gives the pin `ssh-ed25519 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`.
+The source offers the server only the pinned key type, so a server holding
+keys of several types presents the one you pinned. A pin without its
+algorithm fails the workspace load with an error showing the expected form.
+
+To bootstrap a pin, connect once with a placeholder of the right key type
+(the all-`A` fingerprint from the examples will do): the source fails to
+start and the error names the key type and fingerprint the server actually
+presented, or says the server holds no key of that type. Verify that
+fingerprint with whoever runs the server, then put it in the config.
 
 `"accept-unverified"` disables server authentication entirely — the engine
 will send credentials to whatever answers at `host:port`, including an
@@ -186,7 +227,7 @@ sftpSource({
   host: env("SFTP_HOST"),
   username: env("SFTP_USERNAME"),
   password: env("SFTP_PASSWORD"),
-  hostKey: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  hostKey: "ssh-ed25519 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
   dir: "/upload",
   pattern: "*.zip",
   preprocess: [unpack({ entryPattern: "*.hl7" }), hl7v2Batch()],
@@ -358,6 +399,11 @@ refused field.
 - A file is picked up once its size and mtime are stable across two
   consecutive listings, so a file still being uploaded waits a cycle. After
   an engine restart every file waits one cycle for the same reason.
+- A server that will not open a file because it is still being uploaded
+  (Windows-based servers lock it) does not fail the cycle: that file is
+  tried again on the next one, and the rest are read.
+- An entry the server lists without a type, size or modification time is
+  never read.
 - A file's identity is its path + mtime + size. A file that changes after
   ingestion is a new identity and is ingested **again**.
 - With no `preprocess` chain, one file becomes exactly one message, handed
@@ -377,7 +423,12 @@ refused field.
 
 A connection failure, an authentication failure, a host-key mismatch, or any
 operation exceeding `timeoutMs` restarts the source worker with exponential
-backoff, and the engine keeps retrying. The dashboard shows the source as
+backoff, and the engine keeps retrying. After a rejected login the source
+does not try that server and user again for 1 minute, doubling up to 1 hour,
+so a wrong password does not lock the account on servers that lock after
+repeated failures; a successful login resets the wait. A server that lists
+files modified more than 5 minutes in the future gets one warning per cycle:
+its clock is ahead or it reports local time, and such files wait. The dashboard shows the source as
 down with its restart count and last error — a wrong password and an
 unreachable host look the same there, so read the error text. A stalled
 server surfaces as a timeout, never as a silent hang.

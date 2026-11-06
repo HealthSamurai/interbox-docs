@@ -131,7 +131,8 @@ Some failures come from the engine, not from your code. Their kinds start with
 | `engine/codec_mismatch` | `store`, or the last step | the stored value is in another codec's column, after a codec change; or an item does not fit the store of the pipeline a bridge hands it to |
 | `engine/store_missing` | `store` | the unit has no stored value |
 | `engine/item_unserializable` | the last step | an item or its meta cannot be stored as JSON |
-| `engine/write_failed` | `engine` | Postgres refused to write the unit's result |
+| `engine/write_failed` | `engine` | Postgres refused to write the unit's result, or its staged outputs could not be copied: Postgres refused a part as data, or a part could not be read back |
+| `engine/copy_incomplete` | `engine` | the unit came from a staged copy, of a large input or of a unit's outputs through a bridge, that stopped part-way: Postgres refused a part as data, or a part could not be read back. Retry refuses the unit; deliver it again as a new delivery or under a new name (an identical re-upload to S3 keeps its ETag and is skipped as already read) |
 
 ### Failures at the sender
 
@@ -163,6 +164,8 @@ Neither touches a unit the engine is working on:
 - a unit in another status is left unchanged, reported with its `status`;
 - a unit another transaction holds at that moment is `busy`;
 - a unit with an item still being sent is `item_in_flight`;
+- a unit still holding waiting items after Retry has deleted 10,000 across all the units of the call is `items_left`: the sender drops the rest;
+- a unit at `engine/copy_incomplete` is `incomplete_input` for Retry, as retrying it alone would send part of an input; deliver it again as a new delivery or under a new name. Defer still takes it;
 - an id that is not a unit of that pipeline is `not_found`.
 
 Run the action again once the engine has moved on. A `skipped` unit cannot be
@@ -193,6 +196,8 @@ its time — never the text of the input or of its error:
 |---|---|
 | `too_large` | an MLLP frame or a request body was over the source's `maxBytes` |
 | `store_misfit` | a row did not fit the store's codec |
+| `source_error` | the source's own read mark or state write for the input could not be stored; MLLP and webhook sources never raise it |
+| `copy_pending` | an earlier input's staged rows are not all copied yet, so this input waits; the source retries |
 | `step_error` | a step before the store threw, or asked for `notReady` |
 | `not_ready` | a step before the store found a [reference lookup](../reference/steps.md#reference-lookups-definelookup-and-ctxlookup) not ready, or threw `NotReady` |
 | `timeout` | the input's deadline passed, in a step or in a statement Postgres cancelled at it |

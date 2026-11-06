@@ -1,8 +1,9 @@
 # Deployment
 
 Interbox ships as one all-in-one image (engine + API + dashboard). It always
-needs two things it does **not** bundle: a **PostgreSQL** database and an
-**Aidbox** endpoint (see [System Requirements](sizing.md) for sizing).
+needs a **PostgreSQL** database, which it does **not** bundle. An **Aidbox**
+endpoint is optional: you need one only when your pipelines deliver to it (see
+[System Requirements](sizing.md) for sizing).
 
 ![Interbox deployment topology: HL7v2 over MLLP into an internal LoadBalancer, the all-in-one pod delivering FHIR to Aidbox and using a managed Postgres, dashboard reached over a VPN behind an SSO gate and TLS](../../assets/interbox-topology.svg)
 
@@ -26,7 +27,8 @@ or per-cloud overlays; go there for the reference:
   the full values table, install command, and setup scenarios (managed PG,
   reusing Aidbox's cluster, sibling charts, locked-down PG).
 - [**PREREQUISITES.md**](https://github.com/HealthSamurai/helm-charts/blob/main/interbox/PREREQUISITES.md) —
-  Postgres and Aidbox requirements, the secret keys, TLS, and MLLP exposure.
+  Postgres and optional Aidbox requirements, the workspace and sign-in settings,
+  the secret keys, TLS, and MLLP exposure.
 
 The one-liner to get going:
 
