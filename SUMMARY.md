@@ -13,6 +13,7 @@
 * [Reading Files from Storage](concepts/reading-files/README.md)
   * [Sending Files to Interbox](concepts/reading-files/sending-files.md)
   * [SFTP](concepts/reading-files/sftp.md)
+  * [Local and Mounted Folders](concepts/reading-files/local-folder.md)
   * [Amazon S3](concepts/reading-files/amazon-s3.md)
   * [Google Cloud Storage](concepts/reading-files/google-cloud-storage.md)
   * [Azure Blob Storage](concepts/reading-files/azure-blob-storage.md)

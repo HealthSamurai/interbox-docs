@@ -27,12 +27,15 @@ graph LR
 Each row is one **feed**: a folder with its own pipeline. Interbox reads the complete files,
 splits them into records, and your mapping turns each record into FHIR resources.
 
-Interbox reads feeds from [SFTP](sftp.md), [Amazon S3](amazon-s3.md),
+Interbox reads feeds from [SFTP](sftp.md), [a local or mounted folder](local-folder.md), [Amazon S3](amazon-s3.md),
 [Google Cloud Storage](google-cloud-storage.md) and [Azure Blob Storage](azure-blob-storage.md):
 
 {% cards columns="2" %}
 {% card icon="terminal" title="SFTP" href="sftp.md" %}
 A directory on an SFTP server.
+{% endcard %}
+{% card icon="folder" title="Local and Mounted Folders" href="local-folder.md" %}
+A folder on a volume mounted into Interbox, such as a network share.
 {% endcard %}
 {% card icon="cloud" title="Amazon S3" href="amazon-s3.md" %}
 An S3 bucket or an S3-compatible store.
@@ -122,7 +125,7 @@ what changed.
 
 For CSV use `csvRows()` in place of `ndjson()`, with a mapping that takes a `CsvRecord`, and for
 HL7v2 `hl7v2Messages()`, with a mapping that takes the message as a string. To read from another
-storage, replace `s3(…)` with `sftp(…)`, `gcs(…)` or `azure(…)`. Give each pipeline its own feed:
+storage, replace `s3(…)` with `sftp(…)`, `local(…)`, `gcs(…)` or `azure(…)`. Give each pipeline its own feed:
 two pipelines must not read the same folder, or one inside another.
 
 Every setting, with its default, is in [`fileDropSource`](../../reference/file-drop.md#filedropsource).
@@ -168,7 +171,7 @@ called `_READY` unless you set `marker` to another name. Until it appears, Inter
 folder whose files are still uploading is never read halfway.
 
 A file at the top level of the feed is ready once it **has finished arriving**. On a cloud bucket
-a file is visible only once its upload ends; on SFTP and Azure, Interbox waits until the file
+a file is visible only once its upload ends; on SFTP, a local folder and Azure, Interbox waits until the file
 stops changing (see the storage's page).
 
 The marker file can be empty, or list the files with their record counts so that a file cut short
@@ -365,8 +368,9 @@ A skipped file's reason ends with the version Interbox listed it at, such as
 had it. A folder delivery that disappears from the storage while Interbox reads it is still
 finished: each file not yet read is skipped, `not_found`, and the delivery gets its verdict.
 
-A file overwritten while Interbox reads it is never stored half old, half new. On SFTP Interbox
-drops what it read; on a bucket it may finish the old version and store that. A top-level file is
+A file overwritten while Interbox reads it is never stored half old, half new. On SFTP, and in a
+local folder when the file is rewritten in place, Interbox drops what it read; on a bucket, or in
+a local folder when a new file is renamed over it, Interbox may finish the old version and store that. A top-level file is
 read again in its new version at the next poll. A file in a folder delivery that Interbox did not
 finish reading is skipped, since a delivery must not change once it is ready.
 

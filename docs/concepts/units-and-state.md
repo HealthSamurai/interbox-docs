@@ -211,6 +211,11 @@ The store declares which attrs are indexed:
 - **The dashboard filters and counts on declared attrs only**, beside
   `status`, `error_kind` and `error_step`. A step's `ctx.units` may filter on
   any attr, but an undeclared one reads every unit of the pipeline.
+- **The Units field panel counts `status`, `error_kind` and `error_step` over
+  all matching units in the selected time window.** Declared attr counts use
+  the newest 10,000 matching units; a sampled field shows the sample size and
+  total. Each field applies the other fields' filters and ignores its own.
+  Each field shows at most the 50 most frequent values.
 - **Every index costs a write per status change.** A unit changes status about
   three times, and each change rewrites each of its indexes. Declare the attrs
   you filter on, not every attr you set.

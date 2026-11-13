@@ -1,7 +1,7 @@
 # Sending Files to Interbox
 
-A sending system writes files into a folder on an SFTP server or in a cloud storage bucket, and
-Interbox reads them from there. Interbox only reads: it never writes, moves or deletes anything in
+A sending system writes files into a folder on an SFTP server, on a file share mounted into
+Interbox, or in a cloud storage bucket, and Interbox reads them from there. Interbox only reads: it never writes, moves or deletes anything in
 the folder. This page lists what the sending system does so that every file and every export is
 read whole.
 

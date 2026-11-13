@@ -1,10 +1,10 @@
 # `/files`
 
-`fileDropSource` reads files that a sending system drops into SFTP, Amazon S3, Google Cloud Storage or Azure Blob Storage, and the steps in `@health-samurai/interbox/files` turn them into records. The concepts are in [Reading Files from Storage](../concepts/reading-files/README.md).
+`fileDropSource` reads files that a sending system drops into SFTP, a local or mounted folder, Amazon S3, Google Cloud Storage or Azure Blob Storage, and the steps in `@health-samurai/interbox/files` turn them into records. The concepts are in [Reading Files from Storage](../concepts/reading-files/README.md).
 
 ## `fileDropSource`
 
-Reads files that a sending system drops into an SFTP directory or a cloud storage bucket, and
+Reads files that a sending system drops into an SFTP directory, a local or mounted folder or a cloud storage bucket, and
 hands each file to the pipeline's first step. [Reading Files from Storage](../concepts/reading-files/README.md)
 explains feeds, deliveries and readiness; this section lists the settings. The older 1.x
 `sftpSource` (see [/builtins](builtins.md)) reads one SFTP directory without deliveries.
@@ -22,7 +22,7 @@ The source, its transports and the steps below come from `@health-samurai/interb
 
 | Field | Sets | Default |
 |---|---|---|
-| `transport` | the storage: `sftp(…)`, `s3(…)`, `gcs(…)` or `azure(…)` | required |
+| `transport` | the storage: `sftp(…)`, `local(…)`, `s3(…)`, `gcs(…)` or `azure(…)` | required |
 | `marker` | the name of the file that closes a folder or `group` delivery, found directly in the delivery's folder, or for `group` at the shallowest path `group` maps to the delivery; a file of that name deeper is ignored like `_SUCCESS`; a file at the top level that is a delivery of its own never needs one | `"_READY"` |
 | `expect` | name patterns that must each match a file before a delivery is ready, in place of a marker file; Interbox refuses it together with `marker` | none |
 | `group` | a function from a file's path to its delivery's name, or `null` | top-level folders and files |
@@ -38,6 +38,7 @@ The source, its transports and the steps below come from `@health-samurai/interb
 | `maxFileBytes` | with `read: "file"`, the largest data file read, in bytes as stored; a larger one is skipped, reason `over maxFileBytes`. A file must also be read within one poll: at 15,000 to 25,000 records a second, `pollTerm` bounds how large a file can be. Not allowed with `read: "delivery"` | 64 MiB |
 
 `transport` takes one of [`sftp(…)`](../concepts/reading-files/sftp.md),
+[`local(…)`](../concepts/reading-files/local-folder.md),
 [`s3(…)`](../concepts/reading-files/amazon-s3.md),
 [`gcs(…)`](../concepts/reading-files/google-cloud-storage.md) or
 [`azure(…)`](../concepts/reading-files/azure-blob-storage.md); their fields are on those pages.

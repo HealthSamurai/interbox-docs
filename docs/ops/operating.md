@@ -9,9 +9,8 @@ the same actions from a script, see [Admin Scripts](admin-scripts.md).
 ## The dashboard
 
 **Dashboard** opens on the home, **Sources** shows the pipelines' sources, and
-**Pipelines** and **Instances** are listed in the sidebar. **Reference** is one
-entry for the HL7v2 and C-CDA references, with a switch between the two in the
-page header. **Code mappings** lists the codes the pipelines' units wait on.
+**Pipelines** and **Instances** are listed in the sidebar. **Reference** is
+the HL7v2 reference. **Code mappings** lists the codes the pipelines' units wait on.
 **Units** and **Unit** open from the Pipelines page, the Dashboard and the
 Sources page.
 
@@ -236,7 +235,7 @@ The tabs, in this order:
 
 | tab | what it shows |
 |---|---|
-| the value's own | for an HL7v2 message, **Raw HL7v2** and **Parsed**; for a C-CDA document, **Document** and **Raw XML**; for JSON, **Message**. Any other value gets **Raw** — see below |
+| the value's own | for an HL7v2 message, **Raw HL7v2** and **Parsed**; for JSON, **Message**. Any other value gets **Raw** — see below |
 | FHIR resources | the FHIR resources the unit's sender items carry, a `resourceType` in their payload, both the items still waiting and the finished ones: the resources grouped by type in item order, from the first 500 waiting and the first 500 finished items by id. Each says it is waiting to be sent, or how it finished and when. Pick one for its summary and, where its body is kept, its JSON; a payload over 1 MiB gives no JSON. The tab is locked while there are none, and says why |
 | Details | the cards below: the unit's fields, its queue state, its sender items and its lineage |
 
@@ -246,8 +245,6 @@ whatever it holds.
 - **An HL7v2 message**, text that starts `MSH|`. **Raw HL7v2** shows its
   segments, each field with its spec, its table's meaning and the spec
   warnings; **Parsed** shows the parsed value with its TypeScript accessor.
-- **A C-CDA document**, XML whose root element is `ClinicalDocument`.
-  **Document** shows its document tree, parsed on read; **Raw XML** the text.
 - **JSON**, a `json` value or text holding a JSON object or array. **Message**
   shows it pretty-printed.
 - **Anything else** gets **Raw**: the stored value, a `bytes` value as the
@@ -327,7 +324,7 @@ Volume are that sender's own:
 
 The address is the source's configuration with its `env()` values resolved. A
 webhook source takes no host and listens on every interface, shown as `[::]`.
-A file-drop feed is shown as `sftp://host:port/dir`, `s3://bucket/prefix`,
+A file-drop feed is shown as `sftp://host:port/dir`, `file:///dir`, `s3://bucket/prefix`,
 `gs://bucket/prefix` or `azure://account/container/prefix`, with no user name,
 endpoint or region. No secret is shown. **Units** opens the pipeline's units.
 
@@ -602,7 +599,7 @@ stages, its pipelines' sources, the inputs it refused, and its reload error.
     the part, the staged file and the error in their message and in an ERROR
     log line, and a file-drop delivery is judged `partial`. Retry refuses them
     as `incomplete_input`: deliver it again as a new delivery or under a new name. On S3 an identical re-upload keeps its ETag,
-    the file's version, and is skipped as already read; SFTP, GCS and Azure give
+    the file's version, and is skipped as already read; SFTP, local folders, GCS and Azure give
     every upload a new version. A unit whose outputs were being copied ends at
     `engine/write_failed` and its items are dropped unsent; retry it as any
     failed unit.

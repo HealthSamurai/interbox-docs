@@ -23,7 +23,6 @@ import {
   normalizePreprocessChain,
   aidboxSender,
   hl7v2Parser,
-  ccdaParser,
   fhirSystem,
   aidboxSystem,
   epicSystem,
@@ -470,62 +469,6 @@ Aidbox does not allow a topic destination to be modified, so adding the header m
 destination and creating it again.
 
 Not to be confused with [webhooks](../concepts/webhooks.md), which Interbox sends out.
-
-## 1.x: `ccdaParser` — C-CDA document parser
-
-```ts
-interface CcdaParserConfig {}   // no options yet
-```
-
-Parses an HL7 C-CDA XML document into a typed clinical document and lands it in
-`ccda_in`. Unlike HL7v2, one payload is one document — nothing is split.
-
-```ts
-ccdaParser()
-```
-
-Mapping to FHIR is yours to write. `@health-samurai/interbox/ccda` exports
-`parseCda`, which parses the document, and `toFhirBundle`, which turns the
-parsed document into a FHIR R4 `Bundle`. A 2.0 pipeline has no parser stage, so
-one step after the store does both:
-
-```ts
-import { defineStep, type Batch } from "@health-samurai/interbox/chain";
-import { parseCda, toFhirBundle } from "@health-samurai/interbox/ccda";
-
-const ccdaToFhir = defineStep("ccda-to-fhir", (docs: Batch<string>) =>
-  docs.flatMap((xml) =>
-    (toFhirBundle(parseCda(xml, "ClinicalDocument")).entry ?? []).flatMap((e) => (e.resource ? [e.resource] : [])),
-  ),
-);
-```
-
-A step that calls `parseCda` itself does not make the root-element checks
-described below; those belong to the 1.x `ccdaParser`.
-
-The bundle links its entries with `urn:uuid:` references. If your destination
-expects `Type/id` references, rewrite them in the step — `entry.fullUrl` carries
-the `urn:uuid:` that the other entries point at, and every resource has an `id`.
-
-**Derive your own resource ids.** The bundle's ids are fresh UUIDs per conversion, so
-converting the same document twice produces two unrelated sets of resources — a retry
-or a resent correction then duplicates every patient at the destination. Key each
-resource on something stable (its first `identifier`, else its position), hash that
-together with the document's own id, and build the reference map over the ids you
-derived:
-
-```ts
-const docId = doc.id?.extension ?? doc.id?.root ?? "unknown-document";
-const key = resource.identifier?.[0]?.value ?? `#${index}`;
-const id = hash(`${docId}|${resource.resourceType}|${key}`);
-```
-
-Same document in, same ids out, so a re-send overwrites its own resources.
-
-A document is rejected before parsing when its root element is not
-`ClinicalDocument`. Namespace-*prefixed* documents (`<cda:ClinicalDocument>`) are
-not supported and are rejected with the error kind `prefixed_ccda`; the usual
-default-namespace form (`xmlns="urn:hl7-org:v3"`) is what to send.
 
 ## 1.x: `aidboxSender` — Aidbox FHIR sender
 

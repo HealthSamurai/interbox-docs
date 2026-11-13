@@ -66,8 +66,6 @@ moved its first one, so it replaces it.
   reads it, to decide where a `processed` message lands: on `received` when it
   still has a pending delivery, so 2.0 maps and sends it again, otherwise on
   `sent`. Truncate it once the cutover is final.
-- `interbox.ccda_in`. C-CDA documents stay where they are; the script logs a
-  warning when the table holds any.
 - A 1.x message's hash, its channel and its `extra` column.
 
 **What the target pipeline must be.** Name the one pipeline of the rewritten
