@@ -214,7 +214,7 @@ edits safe. This is what a deployment runs.
 uncommitted edits, and never checks anything out or resets anything. The
 directory belongs to someone else: your own checkout while developing, or the
 volume mounted at `/workspace` in the image. Changes are picked up by watching
-the newest modification time under `src/`.
+the newest modification time under `src/` and `server/`.
 
 If you don't set it, the URL scheme picks the default — `git@`, `https://` and
 `ssh://` mean `clone`; a `file://` URL or a plain path means `worktree`. That is
@@ -240,7 +240,8 @@ no restart. Three things trigger a reload:
 
 - **the poll** — `INTERBOX_WORKSPACE_POLL_MS` (default 30s). In `clone` mode it
   compares the ref's sha at the remote; in `worktree` mode, the newest mtime
-  under `src/`.
+  under `src/` and `server/`. Saving a migration under `drizzle/` does not
+  reload on its own; the next reload applies it.
 - **"Sync now"** in the dashboard's Repository tab, which asks the engine
   directly rather than waiting for the poll.
 - **`SIGHUP`**, for anyone driving the process from outside.
@@ -267,6 +268,17 @@ The environment keeps running the code it has until someone resolves it: push
 the work to keep it, or discard it (`INTERBOX_WORKSPACE_ACCESS=apply`, since
 discarding destroys it for good — as does replacing the pod). Untracked files
 never cause a hold; they survive a reset anyway.
+
+Discard targets all registered engine caches, including held or unavailable pods.
+Each cache applies the durable command once and acknowledges it; missed notifications
+are recovered even with Git polling disabled. Unavailable caches retry on return.
+New caches do not replay earlier discards.
+
+`POST /api/repository/discard` returns the committed command `generation` before all
+caches finish. `GET /api/repository` reports each cache in `replicas`, with `id`,
+`requestedGeneration`, `acknowledgedGeneration`, `hold`, `seenAt` and `stale`.
+The top-level `hold` includes other pods' held checkouts. A stale report (no check
+for 90 seconds) neither proves termination nor acknowledges a pending discard.
 
 This only applies to `clone` mode. A worktree is never refreshed or reset, so
 there is nothing to hold.
@@ -340,7 +352,92 @@ the same three-way merge git would:
 Nothing is overwritten silently, and nothing is lost by refusing — your work
 stays in the browser either way.
 
+## Recovering a pending Git revision
+
+In clone mode, recovery fetches the recorded desired commit, deepening shallow
+history if needed. It verifies the rebuilt digest before starting workers, then
+resumes polling the selected branch. See the [recovery contract](#recovery-contract)
+for configuration and dependency requirements.
+
+A new `git revert` commit on the selected branch can restore earlier workspace
+contents when it descends from the desired commit. Rewinding to an old commit
+may require an explicit branch selection or rollback intent. Reverting workspace
+code does not authorize a retired engine or deployment configuration.
+
+## Terminology belongs to the active generation
+
+Workers and actions read ConceptMaps from their generation's snapshot. Checkout
+edits take effect only after activation, including for lookups that retry after a
+miss. Activate updated maps before retrying affected units. Candidate preparation
+uses its own maps and leaves the active generation unchanged.
+
+## Configuration across replicas
+
+The compatible Helm chart supplies a snapshot of `config` and
+`extraEnvFromConfigMaps`; no separate user configuration file is required. It
+mounts them into one read-only folder and points `INTERBOX_RUNTIME_CONFIG_DIR` at
+it. Without that variable, the whole process environment identifies the
+configuration, as in plain-env launches. Later
+ConfigMaps override earlier ones. At startup, Interbox reads their merged values
+and checks them against the process environment. A conflicting Secret or override
+rejects startup with the key name only. Restart processes to apply ConfigMap changes.
+
+- Put business settings, including destination URL and tenant, in ConfigMaps.
+  Interbox saves them in PostgreSQL for generation recovery. Existing application
+  SQL permissions can read them, so **ConfigMaps must contain no secrets**.
+- Put credentials in Secrets. Rotation for the same destination and tenant takes
+  effect after restart without changing generation. Interbox stores no credential
+  history; operators must ensure tokens authorize the declared destination and do
+  not select business behavior.
+- Read business settings through static `process.env.KEY` or SDK `env("KEY")`,
+  using the SDK shipped with the engine. Both workspace and action bundles pin
+  these values, including static dependencies. Dynamic reads (`process.env[name]`,
+  destructuring or enumeration) are outside this guarantee.
+
+Business initialization must depend on pinned code and configuration. Credentials,
+pod metadata, time, randomness and runtime files or imports must not determine it;
+Interbox cannot validate this for arbitrary code. Saved values remain while active,
+desired or unfinished workers/actions reference them, and are cleaned up on later
+transitions.
+
+Plain-env local and Compose launches still work. They retain legacy environment
+identity: credential changes may create a generation, and recovery of historical
+environment values is not guaranteed.
+
+### Recovery contract
+
+Before publishing a desired generation, Interbox saves its Git commit and ConfigMap
+values. A replacement rebuilds those inputs, even if its deployment now contains
+newer values, and uses its current credentials for the saved destination and tenant.
+
+Recovery requires a fetchable commit, compatible engine and reproducible bundles,
+assets and dependencies. Missing configuration or a digest mismatch blocks recovery.
+An engine started with an `INTERBOX_RUNTIME_ROLLBACK_INTENT` value this deployment has
+not used skips recovery and proposes its current workspace and configuration instead.
+The protocol does not distribute mutable worktrees or dependency trees, freeze
+runtime imports, or guarantee offline startup. Revoked access can prevent delivery.
+Old workers and actions must finish or have their termination
+[confirmed](local-testing.md#a-cutover-blocked-by-a-missing-pod) before activation.
+
 ## Workspace actions
+
+Actions run from the active generation's prepared bundle, including static imports.
+An API without that snapshot, or during a cutover, rejects new starts with `503`.
+An actions build failure rejects the candidate: reload keeps the previous generation;
+first boot remains unready. Without an actions file, requests return `501`.
+
+Preparation compiles the module; each API evaluates it when loading. Keep module
+initialization free of external effects. Put writes inside the action function and
+await them. Runtime imports, opened files, programs and services remain outside the
+snapshot.
+
+A running action blocks generation changes and another run of the same action until
+its promise settles. Abort or database connection loss does not prove it stopped.
+API shutdown requests abort and waits up to `INTERBOX_STOP_GRACE_MS`. After a pod dies,
+follow the [termination procedure](local-testing.md#a-cutover-blocked-by-a-missing-pod)
+before retrying. `GET /api/runtime` lists unfinished `actions` with member/run ID,
+pod UID and generation. History remains readable during cutover. External writes
+need destination idempotency because accepted requests may finish after interruption.
 
 A workspace can ship server-side functions that its own UI pages run on demand.
 Put them in `server/actions.ts`: every exported function is an action, except a
@@ -365,11 +462,14 @@ that ignores it keeps running.
 | `GET /api/workspace/actions` | the names of the actions |
 | `POST /api/workspace/actions/<name>` | starts a run and answers `202` with `{ runId, action, startedAt }`, at once, never with its outcome; `409` while that action already runs |
 | `GET /api/workspace/actions/runs` | the last 50 runs, newest first, without their results |
-| `GET /api/workspace/actions/runs/<runId>` | one run, with its result; `404` once it has left the last 50 |
+| `GET /api/workspace/actions/runs/<runId>` | one run, with its result; `404` after its completed history entry has been pruned |
 
 A run is `{ runId, action, startedAt, finishedAt?, ok?, error?, result?,
-resultBytes?, resultError? }`. It is finished when `finishedAt` is set: poll the
-run by id until then. `ok: false` carries the thrown message in `error`.
+resultBytes?, resultError? }`. Its history entry is terminal when `finishedAt` is set:
+poll the run by id until then. `ok: false` carries the failure message in `error`.
+After connection loss, a failed history entry does not prove that its action stopped or
+that external writes finished. Its unfinished runtime membership remains authoritative:
+starting the action again returns `409` until actual completion or verified termination.
 
 **What an action returns is its run's `result`**, as JSON, so a `Date` arrives
 as its ISO string, and `resultBytes` is the size of that JSON. It is capped at
@@ -381,11 +481,11 @@ be over the cap, so a huge return value is not copied in full first. A value of
 the variable that is not a whole number of bytes keeps no result either, and
 `resultError` names it. Returning nothing leaves all three unset.
 
-Runs and their results live in the memory of the process that ran them, as
-JSON text, so they hold at most 50 times the cap: a restart forgets them, and so
-does the 51st run after them. A report that must outlive that, or that is larger
-than the cap, belongs in a table of the workspace's own, with the action
-returning where to find it.
+PostgreSQL stores UUID run IDs, results and the latest 50 completed runs plus all
+unfinished runs; list requests return the latest 50 entries across replicas and
+restarts. Reading history marks a run failed if its database session disappeared,
+without replaying it. Store larger or longer-lived reports in a workspace table
+and return a reference.
 
 With sign-in on, only a signed-in operator can list, start or read runs, and
 every signed-in operator can read every run by its id: a result is not tied to
@@ -397,11 +497,10 @@ cannot reach these routes either way.
 
 ## Switching the branch an environment runs
 
-At `apply`, the Repository tab's branch picker points the engine at another
-branch: verify a pull request on a stand, then switch back. The override is
-stored beside the clone, so **a restart returns the environment to the ref it
-declares** — nobody can leave a stand silently pinned to a test branch, and the
-dashboard says when it is running an override.
+At `apply`, the Repository tab's branch picker selects the branch for every engine
+sharing the database. The override survives pod replacement and restart; use the
+picker to return to the declared ref. The dashboard shows the override. Engines
+recover missed change notifications through polling and connection recovery.
 
 Switching takes as long as a full reload (fetch, checkout, install, build), and
 the dashboard waits for the engine to confirm rather than assuming.
@@ -412,8 +511,34 @@ the dashboard waits for the engine to confirm rather than assuming.
 INTERBOX_WORKSPACE_CACHE=/var/lib/interbox    # default: the system temp dir
 ```
 
-In `clone` mode this holds the clone, its `node_modules`, the built bundle and
-the ref override. The default lives in the temp directory, which on Kubernetes
-means the pod's own filesystem: a replaced pod re-clones from scratch and
-returns to the declared ref. Point it at a volume if you would rather keep the
-clone (and any branch override) across restarts.
+In `clone` mode the cache holds the checkout, dependencies, bundles, locks and
+readiness report. Branch selection lives in PostgreSQL. A replacement with an
+empty cache clones the shared selection, or the declared ref if none is selected.
+
+**Each pod needs its own cache. Its engine and API must share that cache and PID
+namespace.** Prefer pod-local `emptyDir` storage. Set `INTERBOX_WORKSPACE_INSTANCE`
+to the pod UID in both processes; Interbox uses `instances/<hash-of-identity>` under
+`INTERBOX_WORKSPACE_CACHE`. Container restarts reuse it; a new UID creates a new
+cache. Never assign one identity to different pods.
+
+A shared volume still needs separate instance directories, POSIX hard links and
+exclusive file creation. Remove old directories only after their processes stop.
+Without an explicit identity, Interbox checks the Linux host/pod namespace (hostname
+elsewhere) and rejects a cache that another owner is using. The owner refreshes its
+claim while it runs. A cache whose owner has not refreshed the claim for 30 seconds is
+taken over, so a host reboot, a recreated container or a renamed host keeps its cache;
+a process that starts sooner exits with an error and succeeds on a later start. Hosts
+sharing a hostname need distinct paths or identities. This check prevents accidental
+sharing; it does not prove process termination or isolate untrusted code.
+
+Failed or rejected preparations discard their files; unchanged preparations reuse
+snapshots. Active, desired and durable running members retain their runtime files,
+including unfinished actions after connection loss. Crashed preparations can leave
+files behind. Reclaim an abandoned cache only after all its processes have stopped.
+
+Follow the [multi-replica deployment contract](deploy.md#running-multiple-replicas)
+for runtime compatibility, shared configuration and capacity.
+
+Review custom [source ownership](../concepts/pipelines.md#your-own-source) and
+[stateful mapping](../concepts/stages.md#where-a-step-runs) before scaling. Upgrading
+the SDK does not migrate workspace state assumptions or external effects.

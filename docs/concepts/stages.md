@@ -33,6 +33,13 @@ runs the steps before the store, a **segment** thread that runs the steps after
 it, and a **sender** thread. A pipeline fed through a bridge has no source
 thread, and one that ends in a bridge has no sender thread.
 
+Webhook sources share one port, `INTERBOX_WEBHOOK_PORT`, so a webhook source's
+thread binds none. One more thread per engine, `webhook-router`, runs when the
+workspace declares a webhook source: it binds that port, checks each request's
+method, path, secret and size, and hands the body to the source thread of the
+pipeline the path belongs to. That thread runs the steps before the store and writes the
+store, as any source thread does. The router runs no workspace code.
+
 **Steps before the store** run on each input as it arrives, before the sending
 side gets its answer:
 
@@ -66,6 +73,16 @@ side gets its answer:
   items, the take's state writes and its custom events are written in one
   short transaction after the steps finish. No transaction is open while a
   step runs.
+
+Use `.store(postgresStore({ codec: "json" }), { ordered: true })` when mapping
+reads state written by earlier units. Interbox maps one unit at a time across
+replicas, with row concurrency one, committing results and state before advancing.
+An explicit `batch` must be `1`. Held, delayed, leased or staged inputs block later units; retries
+keep their place, while terminal errors allow progress.
+
+Order follows stored unit IDs, not business timestamps. It applies to one pipeline
+and does not make a step's external writes transactional. Other stores retain
+parallel mapping.
 
 ### The step's context
 
@@ -135,7 +152,9 @@ const markLastSeen = defineStep("mark-last-seen", (msgs: Batch<HL7v2Message>, ct
   unit's: they land even when the unit that made them fails.
 
 A namespace name uses lowercase Latin letters, digits, `-` and `.`, and starts
-with a letter. See [Units and state](units-and-state.md) for the rest.
+with a letter. Names beginning `filedrop.` or `aidbox.` are reserved for the
+state Interbox writes itself. See [Units and state](units-and-state.md) for the
+rest.
 
 #### `ctx.units` — other units of the pipeline
 
@@ -221,9 +240,11 @@ are in [Pipelines](pipelines.md#the-store-and-its-options).
 
 ## Senders
 
-`.sender()` ends the chain with one of three things: the built-in `aidbox()`, a
-sender of your own from `defineSender()`, or `intoPipeline()`, which hands the
-items to another pipeline (see [Bridges](pipelines.md#bridges)).
+`.sender()` ends the chain with one of four things: the built-in `aidbox()`, a
+sender of your own from `defineSender()`, `intoPipeline()`, which hands the
+items to another pipeline (see [Bridges](pipelines.md#bridges)), or
+`pullSender()`, which keeps the newest version of each record for a consumer to
+poll (see [A Queue Consumers Poll](pull-senders.md)).
 
 ### From the steps to the sender
 
@@ -238,11 +259,35 @@ they became due, up to the sender's `batch`, and passes them to the sender's
 `run` as **seeds**. Two rules hold for items that share a key:
 
 - **Versions go out oldest first.** An item is not picked while an older item of
-  the same key is waiting. Older means an earlier `order_at` of its unit — the
-  event time a step set with `withOrder`, or else its arrival — then the lower
+  the same key is waiting. Older means an earlier `order_at` of its unit (the
+  event time a step set with `withOrder`, or else its database creation timestamp), then the lower
   unit id, then the lower item id.
 - **One worker holds a key at a time.** The engine leases each seed's key while
   `run` works on it.
+
+Sending waits for older unfinished mappings and staged outputs. Their destination
+keys are still unknown, so one slow mapper can delay unrelated keys in its pipeline.
+An abandoned claim blocks until lease expiry and retry or terminal failure. A unit
+held by `notReady` does not hold others back. When it maps later, an item whose key
+had a newer version sent while the unit was held is dropped with the kind
+`engine/superseded`. An input committed late is not held, so it is still sent.
+Dropping assumes each item carries its resource whole, as the newer version then
+replaces it. A pipeline that builds one resource from several inputs, each giving
+some of its fields, would lose a held input's fields: do not hold units there.
+
+An input becomes accepted at transaction commit. Ordering covers committed, visible
+inputs and queued outputs; IDs and creation timestamps do not record commit order.
+An uncommitted smaller ID cannot block processing. If it commits after a newer value
+was delivered, its older output may arrive last. Rejecting stale business events
+requires source versions and a destination policy; ETags alone cannot do that.
+
+Bridges (`intoPipeline` / `fromPipeline`) preserve `order_at`, origin and correlation.
+They stage later outputs until older committed upstream mappings and copies finish,
+while mapping can continue in parallel. This can delay independent keys in that chain;
+unrelated pipelines sharing a destination have no shared ordering guarantee.
+
+Manual retries and backdated `withOrder` values order pending work only. They cannot
+undo completed writes or prove that all older source events have arrived.
 
 A declared sender is code and configuration: several pipelines may end in the
 same sender value, and each still has its own queue, its own sender thread and
@@ -253,7 +298,7 @@ its own state.
 ```ts
 import { defineSender, drainFifo, rejected, retry } from "@health-samurai/interbox/chain";
 
-export const postJson = (url: string) =>
+export const postJson = (url: string, deploymentId: string) =>
   defineSender<unknown>({
     id: "post-json",
     retryDelayMs: 10_000,
@@ -262,7 +307,7 @@ export const postJson = (url: string) =>
         const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(30_000)]);
         const res = await fetch(url, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", "idempotency-key": `${deploymentId}:post-json:${seed.id}` },
           body: JSON.stringify(seed.payload),
           signal,
         });
@@ -273,6 +318,15 @@ export const postJson = (url: string) =>
       }),
   });
 ```
+
+The destination must honor the idempotency key, recording it and applying its effect
+in one transaction before acknowledging success. On duplicates, return the recorded
+result without repeating the effect. An external effect needs the next system's
+idempotency contract too.
+
+`seed.id` survives retries and worker takeover. Use a stable deployment identifier
+to avoid collisions across databases. A newly ingested resend has new IDs, so this
+does not deduplicate input resent after a lost MLLP acknowledgement.
 
 | option | default | what it sets |
 |---|---|---|
@@ -360,6 +414,7 @@ Aidbox. It goes with two steps from the same module:
 | `retryDelayMs` | 30 000 | delay before the next try |
 | `runTimeoutMs` | 300 000 | how long one cycle may take |
 | `validateFirst` | off | check the resources with `$validate` before sending them |
+| `versionGuard` | off | write with version conditions so a late request cannot overwrite a newer value; needs read access ([Guarded Aidbox writes](../reference/steps.md#guarded-aidbox-writes)) |
 
 `url` and the `auth` fields may be `env()` references. They are read as each
 cycle starts, so an unset variable fails that cycle and retries its seeds.
@@ -375,9 +430,8 @@ cycle starts, so an unset variable fails that cycle and retries its seeds.
    A resource whose hash matches is answered `sent` without a request. One with
    a fingerprint is sent as `PATCH`, one without as `PUT`. To remove an element
    from a resource delivered before, map it as `null`: a `PATCH` removes it,
-   and the first send, a `PUT`, drops nulls. A `PATCH` that Aidbox answers
-   `404` or `410`, because the resource was deleted there, is sent again at once
-   as a `PUT`.
+   and the first send, a `PUT`, drops nulls. A `PATCH` on a resource deleted
+   in Aidbox is sent again at once as a `PUT`.
 3. **It sends batch bundles,** grouping resources that refer to each other,
    and records the fingerprint of each resource Aidbox accepts.
 
@@ -387,7 +441,7 @@ Each entry of Aidbox's answer becomes the item's outcome:
 |---|---|---|
 | `2xx` | sent | — |
 | a reference to a resource it does not have | wait | `sender/reference_missing`; the message names every missing reference |
-| `409` with an edit conflict | wait | `sender/edit_conflict` |
+| `409` with an edit conflict, or `412` | wait | `sender/edit_conflict` |
 | `5xx` | retry | `sender/aidbox_unreachable` |
 | any other refusal | rejected | `sender/aidbox_rejected` |
 

@@ -5,7 +5,7 @@
 | import | what it is |
 |---|---|
 | `@health-samurai/interbox` | `env`, the error taxonomy, `defineSystem`, `provenanceId` (below), and the 1.x pipeline DSL (see [1.x exports](#1x-exports)) |
-| `@health-samurai/interbox/chain` | the 2.0 pipeline DSL: `pipeline`, `defineStep`, `defineState`, `defineLookup`, `NotReady`, `postgresStore`, `defineSender`, `mllpSource`, `webhookSource`, the bridges and `ChainRegistry` — see [Steps](steps.md), [Sources](steps.md#sources-mllpsource-and-webhooksource) for the two sources, and [Reference lookups](steps.md#reference-lookups-definelookup-and-ctxlookup) for `defineLookup` and `NotReady` |
+| `@health-samurai/interbox/chain` | the 2.0 pipeline DSL: `pipeline`, `defineStep`, `defineState`, `defineLookup`, `NotReady`, `postgresStore`, `defineSender`, `pullSender`, `mllpSource`, `webhookSource`, the bridges and `ChainRegistry` — see [Steps](steps.md), [A Queue Consumers Poll](../concepts/pull-senders.md) for `pullSender`, [Sources](steps.md#sources-mllpsource-and-webhooksource) for the two sources, and [Reference lookups](steps.md#reference-lookups-definelookup-and-ctxlookup) for `defineLookup` and `NotReady` |
 | `@health-samurai/interbox/hl7v2` | generated HL7v2 domain model, parser and the `hl7v2Parser()` step — [/hl7v2](hl7v2.md) |
 | `@health-samurai/interbox/aidbox` | the `fhirItems()` and `skipUnchanged()` steps and the `aidbox()` sender — see [Steps](steps.md#aidbox-fhiritems-skipunchanged-and-aidbox) |
 | `@health-samurai/interbox/admin` | functions a workspace script reads and changes units with — see [Admin Scripts](../ops/admin-scripts.md) |
@@ -46,10 +46,12 @@ root's own `pipeline` and `PipelineRegistry` are the 1.x DSL — see
 const SDK_VERSION: string; // sourced from this package's own package.json
 ```
 
-The version an engine runs is shown on the dashboard's Instances page. The 2.0
-engine does not compare it with the workspace's: `ChainRegistry` carries no
-version, and a workspace written for 1.x fails to load because it registers
-pipelines or mappers with the 1.x DSL.
+The version an engine runs is shown on the dashboard's Instances page.
+`ChainRegistry` carries this version as `ChainRegistry.SDK_VERSION`, and the
+engine compares it with its own on every load: see
+[Keep the workspace SDK compatible](../ops/updating.md#keep-the-workspace-sdk-compatible).
+A workspace written for 1.x fails to load because it registers pipelines or
+mappers with the 1.x DSL.
 
 ### Env — see [Env & Config](../concepts/env-and-config.md)
 

@@ -155,7 +155,9 @@ units belong to the receiving pipeline, and its webhooks get them.
 
 - **At least once.** A row is retried until delivered or parked; your endpoint
   may see the same event more than once. Dedupe on the `X-Interbox-Id` header
-  (the stable event id, also the payload's `id`).
+  (the stable event id, also the payload's `id`). Register that ID and apply
+  the receiver's effect in the same transaction; recording the ID afterward
+  leaves a crash window that can repeat the effect.
 - **No ordering guarantee — order by `occurredAt`.** Independent per-row
   backoff means events can arrive out of order. `X-Interbox-Id` is not an
   order either: it is assigned when the event row is written, and an operator's

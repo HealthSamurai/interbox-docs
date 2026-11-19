@@ -181,8 +181,8 @@ A failure before the store leaves no unit and stores nothing. The input is
 refused, and the sending side is expected to send it again:
 
 - MLLP answers `AE`, with the reason;
-- the webhook source answers `500`, with the reason in the body, or `413` for a
-  body over its `maxBytes`;
+- the webhook source answers `500` with a fixed text, `413` for a body over
+  its `maxBytes`, or `401` for a request without its secret;
 - an MLLP frame over `maxBytes` closes the connection.
 
 A permanently broken input is therefore refused every time it is resent. To
@@ -195,6 +195,8 @@ its time — never the text of the input or of its error:
 | code | the input was refused because |
 |---|---|
 | `too_large` | an MLLP frame or a request body was over the source's `maxBytes` |
+| `undecodable` | an MLLP frame's bytes were not valid for the character set in effect, or MSH-18 named one that cannot be decoded |
+| `unauthorized` | a request to a webhook source with a `secret` did not carry it |
 | `store_misfit` | a row did not fit the store's codec |
 | `source_error` | the source's own read mark or state write for the input could not be stored; MLLP and webhook sources never raise it |
 | `copy_pending` | an earlier input's staged rows are not all copied yet, so this input waits; the source retries |

@@ -33,8 +33,9 @@ registers a pipeline or a mapper through them, naming each one.
 ## The chain
 
 `pipeline(name, { retention })` takes one option. `retention` is how long the
-pipeline keeps its finished sender items and, for `read: "delivery"`, its stored
-delivery files: a duration such as `"30d"` or `"12h"`, from `"1h"` to `"36500d"`,
+pipeline keeps its finished sender items, the records a
+[pull sender](pull-senders.md)'s consumer has acked, and, for `read: "delivery"`,
+its stored delivery files: a duration such as `"30d"` or `"12h"`, from `"1h"` to `"36500d"`,
 or `"forever"`. It is `"7d"` when unset, and a value out of the range throws when
 the pipeline is declared. Interbox stores the value at load, so a changed
 `retention` applies at the next sweep. A pipeline removed from the workspace keeps
@@ -45,7 +46,7 @@ the retention it last declared; one that never had a value stored gets 7 days. S
 | `.source(source)` | where inputs come from: `mllpSource`, `webhookSource`, your own `defineSource()` (see [Your own source](#your-own-source)), or `fromPipeline` (see [Bridges](#bridges)) |
 | `.step(step)` | a step, before or after the store. Repeatable |
 | `.store(postgresStore({ codec }), options?)` | the store, exactly once. See [The store](#the-store-and-its-options) |
-| `.sender(sender)` | the sender, which ends the chain: `aidbox()`, your own `defineSender()`, or `intoPipeline()` |
+| `.sender(sender)` | the sender, which ends the chain: `aidbox()`, your own `defineSender()`, `intoPipeline()`, or `pullSender()` (see [A Queue Consumers Poll](pull-senders.md)) |
 | `.webhook({ url, secret?, on })` | an event subscription, at any point of the chain. Repeatable. See [Webhooks](webhooks.md) |
 
 The rules:
@@ -317,9 +318,49 @@ reference, though not a number; `run` and `start` get the config with them
 resolved, and an unset variable stops the workspace from loading. `type` names
 the source in the dashboard and follows the pipeline name rules.
 
-The engine runs one copy of each source per engine instance. Run a single
-instance for a pipeline whose source polls, or two instances read the same
-input twice.
+Custom sources default to `ownership: "singleton"`: one replica runs `start` or
+`run` under a renewable PostgreSQL lease. If that replica stops without releasing
+it, another takes over within about 30 seconds, once the lease expires. A
+replacement resumes from the cursor committed by `receive`, so even finite sources
+must persist progress.
+
+Lease loss aborts `signal` and fences late input/cursor writes. Pass the signal to
+external operations; accepted writes or acknowledgements can still finish and must
+tolerate retries.
+
+A push listener that must bind on every replica declares `ownership: "replica"`:
+
+```ts
+const listener = defineSource({
+  type: "custom-listener",
+  ownership: "replica",
+  run: async (_config, ctx: SourceRunContext<string>) => {
+    const server = Bun.serve({
+      port: 9000,
+      fetch: async request => {
+        await ctx.receive(await request.text());
+        return new Response(null, { status: 204 });
+      },
+    });
+    ctx.ready();
+    try {
+      if (!ctx.signal.aborted) await new Promise(resolve => ctx.signal.addEventListener("abort", resolve, { once: true }));
+    } finally {
+      await server.stop(true);
+    }
+  },
+});
+```
+
+Call `ctx.ready()` after binding; the pod stays unready until then. Singleton
+standbys remain ready while waiting for ownership. Pull sources cannot use replica
+ownership. While more than one replica runs, a push source with no `ownership`
+logs an error naming `ownership: "replica"`; a source declaring
+`ownership: "singleton"` does not.
+
+Replica listeners commit receives independently and cannot use shared source
+`state()`. Handle upstream retries through input identifiers and acknowledgements.
+Stop accepting inputs on abort; in-flight receives have the shutdown grace to finish.
 
 ## Bridges
 
@@ -329,7 +370,7 @@ with `.source(fromPipeline("a"))`.
 
 ```ts
 pipeline("bulk-files")
-  .source(webhookSource({ port: env("BULK_PORT") }))
+  .source(webhookSource({ path: "/bulk/files" }))
   .store(postgresStore({ codec: "text" }))
   .step((files) => files.flatMap((file) => file.split("\n").filter((line) => line.trim() !== "")))
   .sender(intoPipeline("bulk-resources"));

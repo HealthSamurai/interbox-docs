@@ -52,7 +52,7 @@ find in an error.
 const uppercase = defineStep("uppercase", (rows: Batch<string>) => rows.map((text) => text.toUpperCase()));
 
 pipeline("lab")
-  .source(webhookSource({ port: env("LAB_PORT") }))
+  .source(webhookSource({ path: "/lab/results" }))
   .store(postgresStore({ codec: "text" }))
   .step(uppercase)
   .sender(toLab);
@@ -202,9 +202,14 @@ attrs under `_skipped`, as `{ "<reason>": <count> }`.
   finds nothing. Filters compare an attr as text, so give a filtered attr a
   string value.
 - **When they are written.** Before the store, with the unit. After the store,
-  when the unit leaves the store as `processed`, `sent` or `skipped`. A unit
-  that fails or waits keeps the attrs it had at the store, and every take of a
-  waiting unit starts from them.
+  when the unit leaves the store as `processed`, `sent`, `skipped` or `error`.
+  A unit that waits, or that failed and will be tried again, keeps the attrs it
+  had at the store, and every take of it starts from them. A unit that ends at
+  `error` keeps the attrs its steps set before the failure, on its last
+  attempt. When Postgres cannot store those attrs, for example a value too long
+  for an `index` declared on it, the unit keeps the attrs it had at the store
+  and still records the step's failure. A unit that ran past its deadline until
+  its attempts ended keeps the attrs it had at the store.
 - **A waiting unit says so.** A unit held by `notReady`, or by a thrown
   `NotReady`, records the hold on its queue row, beside the wait, as
   `notReady: { reason?, attrs? }`, and the dashboard shows what the unit
@@ -256,7 +261,11 @@ after a throw and `engine/step_timeout` after a deadline. The message of
 such as `system/epic_unreachable: …`.
 
 Every retry, automatic or from the dashboard, starts at the store and runs every
-step after it again. A unit at `error` records the step that failed in
+step after it again on the stored value. An automatic retry also starts with
+the attrs the unit had at the store. A retry of a unit at `error` starts with
+the attrs its failed attempt left, except `_skipped`, which the retry clears:
+keys the new run sets overwrite them, and keys it does not set stay. A unit at
+`error` records the step that failed in
 `error_step`. See [Errors](../concepts/errors.md) for `domainError` and its
 kinds.
 
@@ -311,6 +320,10 @@ const newerOnly = defineStep("newer-only", (msgs: Batch<Admit>, ctx: StepContext
   with a letter, and are at most 46 characters. `defineState` throws on any
   other. The name is what the rows are stored under: renaming it leaves the old
   rows behind.
+- **The prefixes `filedrop.` and `aidbox.` are reserved** for the state
+  Interbox writes itself, and `defineState` throws on a name that begins with
+  either. To read the Aidbox sender's state, use the
+  [`fingerprints`](#fingerprints) handle.
 - **Values** are JSON. A key holding the NUL character or a lone UTF-16
   surrogate, or a value JSON cannot hold, makes `set` or `del` throw.
 - **A many-key `get`** is one query and answers a `Map` without the keys it did
@@ -656,22 +669,25 @@ interface MllpSourceConfig {
 }
 
 interface WebhookSourceConfig {
-  port: Num;
+  path: Str;
   secret?: Str;
   maxBytes?: number;
 }
 ```
 
-A source listens on a port of its own and turns each input into one row, a
-`string` decoded as UTF-8: an MLLP frame, or the body of an HTTP `POST`. The
-steps before the store run on that row, and the sending side is answered once
-the input commits or is refused. A pipeline fed by another pipeline has no
-source of its own; it reads [`fromPipeline`](../concepts/pipelines.md#bridges).
+An MLLP source listens on a port of its own. Every webhook source listens on
+the engine's one webhook port, each at its own path. A source turns each input
+into one row, a `string` decoded as UTF-8: an MLLP frame, or the body of an
+HTTP `POST`. The steps
+before the store run on that row, and the sending side is answered once the
+input commits or is refused. A pipeline fed by another pipeline has no source
+of its own; it reads [`fromPipeline`](../concepts/pipelines.md#bridges).
 
-`port`, `host` and `secret` may be `env()` references. The engine checks every
+An MLLP source's `port` and `host`, and a webhook source's `path` and `secret`,
+may be `env()` references. The engine checks every
 field when it loads the workspace, so an unset variable with no default, or a
-value out of range, refuses the load. It reads them again when the source
-starts.
+value out of range, refuses the load. An MLLP source reads them again when it
+starts; a webhook source keeps the values read at load until the next reload.
 
 ### `mllpSource`
 
@@ -685,6 +701,21 @@ starts.
 - **Each frame is one input**, answered `AA` once it commits, and `AE` with the
   reason when it is refused (see [Failures](#failures)). The frames of one
   connection are answered in the order they arrived.
+- **MSH-18 picks the character set a frame is decoded by.** Only its first
+  repetition counts; a frame with no MSH-18 must be valid UTF-8. The names are
+  those of HL7 table 0211 that map to a decoder (`ASCII`, `ISO IR6`,
+  `8859/1` to `8859/9`, `8859/15`, `UNICODE`, `UNICODE UTF-8`, `GB 18030-2000`,
+  `KS X 1001`, `BIG-5`, `JIS X 0202`), plus `ISO IR100`, `UTF-8` and
+  `ISO-8859-1` and its siblings, in any case. A character set whose decoder the
+  runtime does not ship counts as one that cannot be decoded. Interbox decodes
+  `8859/1` (and `ISO IR100`) as windows-1252 and `8859/9` as windows-1254, so
+  bytes 0x80-0x9F become the characters of those code pages: 0x85 is `…`
+  (U+2026).
+- **A frame that cannot be decoded is refused**: when MSH-18 names a character
+  set that cannot be decoded, or a byte is not valid for the character set in
+  effect, the frame is answered `AE` with the reason in MSA-3 and MSH-10 echoed
+  in MSA-2. Nothing is stored, the refusal is counted as `undecodable`, and the
+  warning in the log holds no message text.
 - **A frame over `maxBytes`** gets no answer: the connection is closed, and the
   refusal is counted as `too_large` (see
   [Errors](../concepts/errors.md#refusals-before-the-store)).
@@ -699,29 +730,58 @@ starts.
 
 | field | default | what it does |
 |---|---|---|
-| `port` | — | the TCP port to listen on |
-| `secret` | none | when set, a request must carry it in the `x-interbox-secret` header. An empty string is refused at load |
+| `path` | required | the path a request must be sent to, starting with `/` |
+| `secret` | none | when set, a request must carry it in the `x-interbox-secret` header, or as the password of `Authorization: Basic`. An empty string is refused at load |
 | `maxBytes` | 16 MiB | the largest request body, in bytes; at most 64 MiB |
 
-Each `POST` body, on any path, is one input. The source answers:
+The engine listens for every webhook source on one port: `3002`, or the port
+the operator sets in `INTERBOX_WEBHOOK_PORT` (see
+[Operating Pipelines](../ops/operating.md#environment)). The workspace chooses
+paths only. Give one pipeline `path: "/vendor-a/response"` and another
+`path: "/vendor-b/response"`, and each `POST` lands in its own pipeline's store.
+
+- **A path matches exactly,** case included. Trailing slashes are ignored on
+  both sides, so `/vendor-a/response/` and `/vendor-a/response//` reach
+  `/vendor-a/response`. The query string
+  is not part of the route. A `path` that does not start with `/`, or holds `?`
+  or `#`, is refused at load.
+  So is a `path` a request URL would carry in another form, such as `/a b` or
+  `/données`: declare the percent-encoded form the error names (`/a%20b`).
+- **A source without `path` refuses the load,** and so does a source that names
+  a `port`. The error names the pipeline.
+- **Two sources on one path refuse the load.** The error names both pipelines.
+- **An MLLP source on the webhook port refuses the load,** naming its pipeline
+  and `INTERBOX_WEBHOOK_PORT`. With `INTERBOX_WEBHOOK_PORT=0` the system picks a
+  free port for the webhook sources, so an MLLP source on port `0` loads.
+- **The secret and `maxBytes` belong to the route,** so each pipeline keeps its
+  own. With `Authorization: Basic`, the user name is ignored;
+  only the password is compared. A sending system that cannot add a header can
+  send the secret this way.
+
+Each `POST` body is one input. The engine answers:
 
 | answer | when |
 |---|---|
-| `200` | the input committed |
-| `401` | `secret` is set, and the request's `x-interbox-secret` header is missing or different |
+| `200` | the input committed; the body is `ok` |
+| `400` | the request body could not be read |
+| `401` | the route has a `secret`, and the request carries it in neither header; counted as an `unauthorized` refusal while the pipeline's source runs |
+| `404` | no webhook source has the request's path; counted for no pipeline |
 | `405` | the method is not `POST` |
-| `413` | the body is over `maxBytes`; counted as a `too_large` refusal |
-| `500` | the input was refused, with the reason in the body (see [Failures](#failures)); or a stop's grace period ended before it committed |
-| `503` | the source is stopping |
+| `413` | the body is over the route's `maxBytes`; counted as a `too_large` refusal while the pipeline's source runs |
+| `500` | the input was refused (see [Failures](#failures)), or a stop's grace period ended before it committed, or the engine failed on the request. The body is a fixed text; the engine's log names the pipeline (only the port when the request matched no route), the error's kind and the code location it was thrown at, never its message, which can hold the input |
+| `503` | the route's pipeline is not running, it stopped or did not answer in time, or the engine is stopping |
 
+- **When the webhook port cannot be bound, the engine retries it,** with growing
+  waits. Until it is bound, every webhook source reports `backoff` and its
+  pipeline reads `degraded`. Pipelines with other sources run on.
 - **A client that disconnects abandons its input.** The `ctx.signal` of the
   steps before the store fires, nothing of the input is stored, and it is not
   counted as a refusal.
-- **On a stop**, the source takes no new request: one that still reaches it is
-  answered `503`, without running a step. An input already in its steps has
-  until the stop's grace period ends to commit and get its `200`; after that it
-  is abandoned, nothing of it is stored, and it is answered `500`. The sending
-  side resends either.
+- **On a stop**, the engine takes no new request: one that still reaches it is
+  answered `503` with `Connection: close`, without running a step. An input
+  already in its steps has until the stop's grace period ends to commit and get
+  its `200`; after that it is abandoned, nothing of it is stored, and it is
+  answered `500`. The sending side resends either.
 
 ## HL7v2: `hl7v2Parser()` and `fromMsh7`
 
@@ -818,12 +878,55 @@ function skipUnchanged(): NamedStep<FhirItem, FhirItem>;
 The step `aidbox.skip-unchanged`. It skips, with the reason `unchanged`, a
 resource identical to the newest version of its key already queued in this
 pipeline, or, when none is queued, to the version this pipeline last
-delivered. A unit whose resources are all unchanged closes `sent` without
-sending anything, so a resend of the same message, or a Retry, costs nothing at
-Aidbox.
+delivered to its current Aidbox destination. A unit whose resources are all unchanged closes `sent` without
+sending anything. Consecutive versions within one unit are compared in their
+output order, so A → B → A retains the restoring A.
 
-It cannot see a version queued by another unit of the same take: a resource
-that goes A → B → A within one take can end at B.
+The step retains resources when mapping order is uncertain: unfinished mapping or
+staged outputs in another unit, later queued items, multi-unit takes, streamed
+mapping, or an engine without the safety check. Sender deduplication still applies.
+
+Fingerprints include the normalized destination URL and optional `destinationScope`.
+For a URL serving several tenants, set the scope to the tenant's stable identity in
+business configuration. Changing URL or scope, adding scope, or upgrading a legacy
+fingerprint causes delivery again. Credential rotation for the same URL and scope does not.
+Scope neither routes requests nor verifies credentials; operators must match the
+token to the declared tenant.
+
+### Guarded Aidbox writes
+
+By default the sender writes without version conditions and reads nothing, so its
+client needs write permission only. That leaves a late write possible: a request
+that times out can still be running at Aidbox when the item is retried, and if a
+newer version of the same resource is delivered before it lands, it restores the
+older values. One engine can hit this through a timeout and a retry. Several
+replicas make it more likely, since another pod takes over an item whose lease
+expired while its request is still in flight.
+
+Set `versionGuard: true` to fence late writes. Every write then carries a version
+condition: `If-Match` for an update, `If-None-Match: *` for a creation. Aidbox must
+enforce these atomically. A delayed request with an outdated version fails with 412
+instead of overwriting a newer value.
+
+The sender keeps the version Aidbox returns for each successful write, with the
+resource's fingerprint. With `versionGuard`, the next change to that resource on the
+same destination is written with `If-Match` on that version, without a read. The
+sender reads the current version first only when it has none stored for this
+destination: a resource it has not written there yet, a fingerprint from an earlier
+release or another destination, or a write whose answer carried no version. A write
+with a stored version that fails with 412 (another writer changed or deleted the
+resource, or an earlier answer was lost) is read and written once more in the same
+send. If that write fails with 412 too, the item waits as `sender/edit_conflict` for
+a later attempt.
+
+With `versionGuard`, the client needs read and write permissions; reads are needed
+for those cases only. A failed read or missing version blocks affected resources;
+other resources can proceed, and matching delivered fingerprints retain their sent
+outcome. There is no unconditional-write fallback.
+
+A timeout can leave a request running at Aidbox. Retrying may create another history
+version or repeat a trigger. Version guards protect resource state; exactly-once
+effects require destination idempotency committed with the effect.
 
 ### `aidbox()`
 
@@ -833,12 +936,14 @@ function aidbox(cfg: AidboxConfig): Sender<FhirItem>;
 interface AidboxConfig {
   readonly id?: string;
   readonly url: Str;
+  readonly destinationScope?: Str;
   readonly auth: { kind: "basic"; user: Str; password: Str } | { kind: "bearer"; token: Str };
   readonly batch?: number;
   readonly maxRetries?: number;    // default 10
   readonly retryDelayMs?: number;  // default 30 000
   readonly runTimeoutMs?: number;  // default 300 000
   readonly validateFirst?: boolean;
+  readonly versionGuard?: boolean; // default false
 }
 ```
 
@@ -856,11 +961,13 @@ each seed with the resources it references that are still queued.
 |---|---|
 | `id` | an optional name, kept in the pipeline's definition; same rule as a pipeline name |
 | `url`, `auth` | read from the environment as each send starts, so an unset `env()` fails that send rather than the load |
+| `destinationScope` | optional stable tenant or logical destination identity, literal or `env()`; extends fingerprint scope without changing request routing |
 | `batch` | how many items one send picks to start from; 100 by default |
 | `maxRetries` | after this many errors an item's unit ends at `error` |
 | `retryDelayMs` | the fixed wait before an item's next try |
 | `runTimeoutMs` | how long one send may take before every item in it counts an error |
 | `validateFirst` | runs `$validate` on the batch before sending it |
+| `versionGuard` | writes with version conditions and reads versions where it must; off by default, see [Guarded Aidbox writes](#guarded-aidbox-writes) |
 
 How it answers for each resource:
 
@@ -868,7 +975,7 @@ How it answers for each resource:
 |---|---|---|
 | 2xx | delivered | — |
 | a reference to a resource that does not exist | waits, and counts no error | `sender/reference_missing` |
-| 409 with an edit conflict | waits, and counts no error | `sender/edit_conflict` |
+| 409 with an edit conflict, or 412 | waits, and counts no error | `sender/edit_conflict` |
 | 5xx, no answer, or a 408, 425, 429 or redirect to the whole request | an error, tried again after `retryDelayMs` | `sender/aidbox_unreachable` |
 | any other refusal | the unit ends at `error` at once | `sender/aidbox_rejected` |
 
@@ -882,11 +989,12 @@ A resource whose content matches what this pipeline last delivered is answered
 delivered without being sent. A resource this pipeline has not delivered before
 is a `PUT`; one that changed since it was delivered is a `PATCH`. To remove an
 element from a resource delivered before, map it as `null`: a `PATCH` removes
-it, and the first send, a `PUT`, drops nulls. A `PATCH` that Aidbox answers
-`404` or `410`, because the resource was deleted there, is sent again at once
-as a `PUT` in a request of its own. A wait has no limit: a unit whose resource
-waits for a reference that never comes stays `processed`, and is closed from the
-dashboard (see [Operating Pipelines](../ops/operating.md)).
+it, and the first send, a `PUT`, drops nulls. A `PATCH` on a resource deleted
+in Aidbox is sent again at once as a `PUT` in a request of its own: Aidbox
+answers it `404`, or with `versionGuard` `412`, after which the sender reads the
+resource and finds it gone. A wait has no limit: a unit whose resource waits for
+a reference that never comes stays `processed`, and is closed from the dashboard
+(see [Operating Pipelines](../ops/operating.md)).
 
 These environment variables tune every `aidbox()` sender in the engine:
 

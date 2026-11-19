@@ -34,6 +34,40 @@ top of its release under **Upgrade Notes**.
 > fingerprints into a 2.0 pipeline while every engine is stopped. Follow
 > [Upgrading from 1.x](upgrade-from-1x.md) for it.
 
+## First upgrade to coordinated runtime generations
+
+**Stop every legacy engine and API before starting a coordinated release.**
+Legacy processes do not register with the coordinator, so it cannot wait for
+their workers. Use `Recreate` or scale to zero and confirm all old containers
+have terminated. Deleting a pod object on an unreachable node is insufficient.
+
+A coordinated engine will not publish a generation while an engine from an earlier
+release has reported a heartbeat in the last few seconds. It stays `NotReady`, names
+that engine's instance and version in an ERROR log line and in its reload error, and
+retries on its own once the old engine stops. Legacy API processes report no
+heartbeat, so nothing detects them: stopping them is up to you.
+
+Enable replicas after this first upgrade. Later coordinated releases support
+rolling updates; a missing old process may require
+[confirmed termination](local-testing.md#a-cutover-blocked-by-a-missing-pod).
+
+**Set `ownership: "replica"` on custom listeners before adding replicas.** A
+custom source without `ownership` runs on one replica at a time. A listener left
+that way binds its port on one pod only, while the other pods stay ready and
+refuse the connections routed to them. Declare `ownership: "replica"` on each
+listener that must accept connections on every pod, and call `ctx.ready()` once
+it is bound; see [source ownership](../concepts/pipelines.md#your-own-source).
+While more than one replica runs, the engine logs an error for each source
+still without `ownership`. Declare `ownership: "singleton"` on a source meant to
+run on one replica to silence it.
+
+## Workspace actions must compile before activation
+
+Fix build errors in `server/actions.ts` and its static imports before updating.
+A failed actions build rejects the candidate workspace: reload keeps the old
+generation, while first boot stays unready. Workspaces without actions are
+unaffected. See [Workspace actions](workspace.md#workspace-actions).
+
 ## Move the image tag
 
 The image tag *is* the engine version. Pre-GA the default is the moving `edge`
@@ -59,9 +93,10 @@ helm upgrade --install interbox healthsamurai/interbox \
   -n interbox --reuse-values --set image.tag=1.4.1
 ```
 
-The rollout behavior (single replica, `Recreate` → a brief stop-then-start) is
-covered in [Deployment](deploy.md); the value keys and pinning options (digest
-pin, `pullPolicy`) live in the
+Use `Recreate` for the first transition from an uncoordinated release. Later
+coordinated releases can use a reviewed rolling strategy; the operating
+requirements are in [Deployment](deploy.md#running-multiple-replicas). The value
+keys and pinning options (digest pin, `pullPolicy`) live in the
 [chart's README](https://github.com/HealthSamurai/helm-charts/tree/main/interbox).
 
 ## Keep the workspace SDK compatible
@@ -71,12 +106,28 @@ This is the one update step unique to Interbox. Keep the workspace's SDK in the
 — while on `0.x` — the same minor. So `1.3.0` ↔ `1.9.2` are compatible; `1.x` ↔
 `2.x`, or `0.4` ↔ `0.5`, are not.
 
-**The 2.0 engine does not check this for you.** It loads the pipelines from the
-`ChainRegistry` your workspace's entry exports, and compares no version:
-`ChainRegistry` carries none. The engine's own version is shown on the
-dashboard's Instances page. A workspace written for 1.x, whose pipelines and
-mappers come from the package root's `pipeline()` and `defineMapper`, fails to
-load with a message that names each of them:
+The engine checks this every time it loads a workspace, at boot and on reload,
+by comparing its own version with the `SDK_VERSION` on the `ChainRegistry` your
+workspace's entry exports:
+
+- **Different bucket:** the workspace is refused, with a message naming both
+  versions and the `interbox pin` or `INTERBOX_VERSION` change that fixes it. A
+  version that cannot be parsed is refused the same way. A refused boot does not
+  start; a refused reload leaves the previous pipelines running.
+- **Same bucket, workspace SDK on a newer minor than the engine:** the workspace
+  loads, and the engine logs one warning per load naming both versions. A feature
+  the newer SDK added can still fail when it is first used, so move the engine up
+  or pin the SDK down.
+- **Same bucket, workspace SDK older or equal:** the workspace loads.
+
+An SDK release whose `ChainRegistry` has no `SDK_VERSION` cannot be compared. Such
+a workspace loads, and the engine logs a warning on each load until the SDK is
+upgraded.
+
+The engine's own version is shown on the dashboard's Instances page. A workspace
+written for 1.x, whose pipelines and mappers come from the package root's
+`pipeline()` and `defineMapper`, fails to load with a message that names each of
+them:
 
 ```text
 the workspace registers pipeline "adt" and mapper "v2-to-fhir" with the 1.x DSL,
@@ -244,10 +295,11 @@ A 2.0 engine that finds rows left in the 1.x tables `interbox.hl7v2_in` or
 `interbox.resource_hash` logs a warning naming `bun scripts/import-1x.ts`: 2.0
 does not process them. See [Upgrading from 1.x](upgrade-from-1x.md).
 
-Because deployments run a single replica with a `Recreate` rollout, an update is
-a brief full stop-then-start, not a rolling one. MLLP senders reconnect and
-retry once the listener is back, and in-flight messages get the engine's stop
-grace period, described below, to persist and ACK.
+Coordinated updates pause processing until old workers and actions finish;
+pods may become unready during the handoff. MLLP sending systems must reconnect
+and retry when a listener closes. In-flight messages have the stop grace below
+to persist and ACK. After a lost ACK, a resend is a new input unless the upstream
+protocol or workspace supplies a durable duplicate identity.
 
 On a stop the engine takes no new work and gives what it has started a grace
 period to finish: 10 seconds by default, set in milliseconds by
@@ -255,6 +307,10 @@ period to finish: 10 seconds by default, set in milliseconds by
 counting as a failed attempt, and is picked up again after the restart. A
 worker stuck in a long synchronous step cannot be interrupted: it is killed
 instead, and its work counts one failed attempt.
+
+The container forwards `SIGTERM` and `SIGINT` to the engine and API and waits
+for both processes to exit. If either process exits on its own, the container
+stops the other and preserves the first process's exit status.
 
 The engine's whole stop takes the grace period, then a 2-second margin for
 workers to release what they hold, then up to 1 second to close them. So the
@@ -282,3 +338,36 @@ expect. So:
 - After a 1.x import, a 1.x image no longer sees the moved rows: going back to
   1.x means restoring the backup taken before the cutover. See
   [Upgrading from 1.x](upgrade-from-1x.md#rolling-back).
+
+### Authorize the rollback
+
+Once a newer image or a changed configuration value has started processing,
+Interbox retires the one it replaced. Pods that start with a retired image or a
+retired configuration stay `NotReady`, and the pods already running keep
+processing. This stops a pod left over from the previous release from switching
+the deployment back during a rolling update.
+
+To roll back on purpose, add `INTERBOX_RUNTIME_ROLLBACK_INTENT` to the same
+rollout, with a value this deployment has not used before, such as a timestamp:
+
+```sh
+INTERBOX_RUNTIME_ROLLBACK_INTENT=rollback-2026-11-12T10:40
+```
+
+Keep the value until that rollout finishes. Each value works once, so the next
+rollback needs a new one. `helm rollback` and a reverted ConfigMap value both
+need it. The value can sit in the ConfigMap next to the other settings: it is not
+part of the business configuration, so removing it later is not a configuration
+change.
+
+A pod that waits for this says so in its engine log and in the `reload error`
+column of the dashboard's Instances page:
+
+```text
+prepared runtime cannot replace the current intent: this engine image was
+replaced by a newer one; to roll back to it, deploy it with a new
+INTERBOX_RUNTIME_ROLLBACK_INTENT value
+```
+
+Workspace code is different: a new Git commit that restores earlier content
+needs no rollback intent.

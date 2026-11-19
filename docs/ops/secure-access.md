@@ -548,16 +548,25 @@ a command-line client has to send it. The cookie is `HttpOnly`, so you cannot
 read it with `document.cookie`; take it from your browser's storage inspector.
 
 It ends every session, every assistant conversation, and every conversation's
-credential — yours among them, so it signs you out too. That is what makes
-rotating a leaked password meaningful. Restarting
-Interbox also ends every administrator session, because that password is only
-ever held in memory — so changing it and restarting provably evicts anyone using
-the old one.
+credential, yours among them, so it signs you out too.
 
-Both also end the assistant conversations the session opened, and that is not
-housekeeping. An assistant transcript holds the message content it was asked
-about, and it lives on the container filesystem rather than in the database, so
-it is outside whatever retention the database has.
+Administrator sessions survive restarts and work across API replicas. Starting a
+replica with a new `INTERBOX_AUTH_ADMIN_PASSWORD` revokes previous administrator
+sessions and assistant grants; replicas with the old password cannot sign users in.
+Disabling the account also revokes access. OIDC sessions are unaffected.
+
+PostgreSQL stores salted credential fingerprints and their retired history, never
+plaintext passwords. A replaced password never comes back: a replica started with
+one parks its API instead of restoring it, so rotate to a new password, also when
+rolling back. Disabling the account works at any time.
+
+Trusted-device cookies survive restarts across replicas. They select the reserved
+password verification lane; users still need a password and a valid session.
+
+The database retains up to 2,000 assistant transcript events per conversation.
+Reset and sign-out remove them; expired or revoked sessions are cleaned up within
+a minute. With authentication disabled, inactive conversations expire after 30 days.
+Generated files and provider transcripts follow their own retention policies.
 
 Be precise about what ending a session does to it. Interbox stops the agent
 process, drops the conversation from memory, and forgets the identifier it would
@@ -784,7 +793,7 @@ Boot logs a warning naming each variable that is in cleartext. Loopback is
 unaffected either way: browsers already treat `http://localhost` as a secure
 origin, and send it the metadata a private address does not get.
 
-## When it is misconfigured, ingestion keeps running
+## When it is misconfigured, the engine keeps running
 
 A missing password or a malformed variable does **not** stop the process. The
 dashboard and its API answer `503` and say which variable is at fault; the engine
@@ -794,12 +803,14 @@ with it and refuse a hospital's feed at the TCP level.
 
 `/api/health` keeps answering so the container is not killed, and
 `/api/auth/status` names the variables so an operator can see what to fix.
-`/api/ready` answers `503` while parked and `200` once the login is usable.
+`/api/ready` answers `503` while parked or while the local engine is not ready.
 
-> `/api/ready` is a **diagnostic**, not a readiness probe. Do not wire it to a
-> `readinessProbe` on a pod whose Service also carries MLLP: a parked dashboard
-> would drop that pod from the Service and refuse the feed at the TCP level,
-> which is the outcome the parking behaviour exists to avoid.
+> A readiness probe on `/api/ready`, as [Deployment](deploy.md#whats-different-about-deploying-interbox)
+> sets up, takes a parked pod out of every Service that selects it, the MLLP
+> Service included, and that pod's feed is refused at the TCP level until the
+> variables are fixed. Check them before a rollout. With `Recreate` or one replica,
+> every pod parks at once; a rolling update stops at the first parked pod while
+> the old pods keep serving.
 
 ## Turning it off
 
@@ -822,6 +833,21 @@ credential the dashboard mints for one assistant conversation. There is no
 deployment-wide bearer token to configure, and nothing you can set that creates
 one. Every credential this deployment accepts therefore expires, and every one of
 them can be revoked — see [What a session is](#what-a-session-is).
+
+### Assistant replicas and interrupted requests
+
+Each conversation has one API owner. Any replica can accept commands or stream
+its database-backed events. `Last-Event-ID` resumes a stream within the retained
+2,000 events; opening a stream does not start an agent.
+
+After owner loss and lease expiry, pending prompts fail and its API grant expires.
+Interbox does not replay them. Send a new prompt to start a fresh agent with the
+retained transcript. **Inspect external effects before retrying:** an accepted
+command, file write or request may have completed despite the interruption.
+
+A conversation allows 32 outstanding commands; queued prompts expire after ten
+minutes. Completion clears payloads and retains metadata for ten minutes. The
+broker stores grant hashes; each new owner issues a fresh session-bound grant.
 
 ### The assistant carries a grant
 
@@ -1083,3 +1109,9 @@ own log, and the two are worth keeping together.
 - [Deployment](deploy.md) — the chart, install, and the engine-specific rollout
   facts.
 - [System Requirements](sizing.md) — sizing the pod, Postgres, and Aidbox.
+
+## Licence activation
+
+Activation cookies expire after ten minutes. Their signing key is stored in
+PostgreSQL, so an unexpired callback remains valid across API process replacement
+and can be verified by another API process using the same database.

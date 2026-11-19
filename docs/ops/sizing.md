@@ -87,6 +87,13 @@ live metrics: three for the reference pipeline, held even when no message
 arrives. Count both against the default `max_connections = 100` as you add
 pipelines.
 
+These limits are **per pod**. Multiply pools by the maximum overlapping pod count,
+including rollout surge. Add coordination, listener, metrics, action and workspace
+connections plus headroom. Use direct or session-pooled PostgreSQL connections.
+
+Budget destination traffic across all replicas too, including retries. An ordered
+store serializes that pipeline's mapping; other work still runs concurrently.
+
 The template ships only `max_wal_size = 4GB`, `wal_compression = on`, and
 `pg_stat_statements`; **`shared_buffers` is left at the Postgres default of
 128 MB, which is too low for production.** Tune it per tier below.
@@ -329,8 +336,9 @@ dashboard's sender panel shows how many items wait for delivery, and why.
 
 - Estimates, not benchmarks — size from the tiers above, then adjust from the
   live signals once real traffic arrives.
-- The Helm chart lives in a separate `helm-charts` repository and currently
-  ships `replicas = 1`; HA is not yet available.
+- Multiple replicas require coordinated engine releases, compatible workspaces,
+  separate pod caches and the [deployment contract](deploy.md#running-multiple-replicas).
+  The chart's default replica count is not a deployment-wide capacity budget.
 - A unit's disk cost depends on what its pipeline stores, the search text it
   sets and the indexes it declares — measure your own average once you have
   real traffic.

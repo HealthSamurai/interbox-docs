@@ -64,6 +64,22 @@ cosign verify-attestation --type vuln \
   healthsamurai/interbox:latest | jq -rs 'map(.payload | @base64d | fromjson | .predicate.metadata.scanFinishedOn) | max'
 ```
 
+The attestation lists every finding Trivy reports for the image: vulnerabilities of every
+severity, those with no fix available included, and any secret findings, with the secret
+itself masked. The build still fails only on what
+[Vulnerability scanning](#vulnerability-scanning) describes, so an image that passed can
+carry findings here, and your own policy decides what to do with them.
+
+What an attestation does not cover:
+
+- Advisories published after its scan. It is accurate as of `scanFinishedOn` and the Trivy
+  database of that day, and only the current release and `edge` are scanned again each night.
+- Anything Trivy does not detect. The scan looks for vulnerabilities and secrets, not
+  misconfigurations or licenses.
+
+An attestation older than this page lists only the findings the build fails on: nothing
+below HIGH, and no vulnerability that had no fix.
+
 Older nightly attestations carry the `image-rescan.yml` workflow identity instead of the
 key. An older release also has a build-time attestation under the earlier release
 pipeline's identity, whose `scanFinishedOn` is the build date.
@@ -73,7 +89,8 @@ pipeline's identity, whose `scanFinishedOn` is the build date.
 Health Samurai scans Interbox images with [Trivy](https://trivy.dev) on every pull
 request, on the release build before any version tag is applied, and nightly against
 the already-published tags. A fixable CRITICAL or HIGH fails the build. So does a leaked
-credential: the same passes scan the image for secrets.
+credential that Trivy rates CRITICAL or HIGH: the same passes scan the image for secrets.
+A secret Trivy rates lower does not fail the build; it appears only in the attestation.
 
 A finding with no available fix is reported and does not fail the build. There are no
 other standing exemptions. Any exception would carry a written reason and an expiry date.

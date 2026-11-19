@@ -99,9 +99,13 @@ to call, so review it as part of the same exercise.
 ## Inbound
 
 The API and the dashboard listen on TCP 3001 (`API_PORT`). Every `mllpSource`
-and `webhookSource` the workspace declares listens on its own port. The Helm
-chart exposes MLLP on 2575 through its own LoadBalancer and creates no Service
-for webhook sources.
+the workspace declares listens on its own port. Every `webhookSource` listens
+on one port, `INTERBOX_WEBHOOK_PORT` (3002 when unset), and sources are told
+apart by their `path`. A `pullSender` answers its consumer's App on that port
+too, at its own path (see [A Queue Consumers Poll](../concepts/pull-senders.md)).
+The engine binds that port in one thread and passes each request to its
+pipeline, and the engine image exposes 3002. The Helm chart exposes MLLP on 2575
+through its own LoadBalancer and creates no Service for the webhook port.
 
 ## From the user's browser
 

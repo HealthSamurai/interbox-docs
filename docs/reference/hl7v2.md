@@ -25,7 +25,10 @@ day-to-day reference.
   repeating `FieldValue[]`, or a component record `{ [n]: FieldValue }`),
   `HL7v2Segment { segment: string; fields: Record<number, FieldValue> }`,
   `HL7v2Message = HL7v2Segment[]`, and `getComponent(field, ...path)` for
-  walking into a field's components.
+  walking into a field's components. A field with no component separator is a
+  plain string and is its own first component: `getComponent("ADT", 1)` and
+  `getComponent("ADT", 1, 1)` give `"ADT"`, `getComponent("ADT", 2)` gives
+  `undefined`.
 - **`fields`** — generated per-segment field accessors (e.g. `fromPID`,
   `fromMSH`) and datatype interfaces, so a step reads a segment's fields by
   name instead of numeric index.

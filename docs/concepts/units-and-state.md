@@ -14,7 +14,7 @@ it, and the sending side is answered only after that commit.
 
 ```ts
 pipeline("lab-batch")
-  .source(webhookSource({ port: env("LAB_PORT") }))
+  .source(webhookSource({ path: "/lab/batches" }))
   .step((files) => files.flatMap(splitBatch).withAttrs((m) => ({ msg_id: controlIdOf(m) })))
   .store(postgresStore({ codec: "text" }), { index: { msg_id: "btree" } })
   .step(hl7v2Parser())
@@ -142,7 +142,7 @@ into B's store as a unit of B, in the transaction that closes A's unit as
 
 ```ts
 pipeline("deliveries")
-  .source(webhookSource({ port: env("DELIVERY_PORT") }))
+  .source(webhookSource({ path: "/deliveries" }))
   .store(postgresStore({ codec: "text" }))
   .step(splitDelivery)
   .sender(intoPipeline("practitioners"));
@@ -167,7 +167,10 @@ pipeline("practitioners")
   everything one delivery produced, across pipelines, shares one correlation
   id. The Unit page lists the units that share it.
 - **B's units start with A's `order_at`**, so the versions of a resource B sends
-  keep the order of A's events. They start with no attrs of their own.
+  can use their inherited event ordering. They start with no attrs of their own.
+- **Bridge publication waits for older committed work in A.** Later outputs may
+  be staged until earlier mappings finish. This covers pending work, not late
+  arrivals or already delivered versions; see [ordering limits](stages.md#senders).
 
 **Lineage lasts while an item is in flight.** A delivered item's row is gone,
 so the lasting record of what a unit delivered is in the destination, when a
@@ -261,6 +264,10 @@ const lastSeen = defineState<{ orderAt: string }>("adt.last-seen");
 - **Names are what the rows are stored under.** Renaming a namespace, or the
   pipeline, leaves the old rows behind. The engine logs pipelines whose stored
   data no declared pipeline names, and never drops them.
+- **`filedrop.` and `aidbox.` are reserved.** Interbox keeps its own state
+  under those prefixes, and `defineState` throws on a name that begins with
+  either. To read the Aidbox sender's state, import the
+  [`fingerprints`](../reference/steps.md#fingerprints) handle.
 
 ## Why steps get no database handle
 

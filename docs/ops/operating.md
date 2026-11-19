@@ -76,6 +76,9 @@ reached `error` per second, not of the percent.
   depths count it once per pipeline.
 - **When Postgres cannot be reached**, System health reads Postgres and the
   engine down and the mapping coverage unknown.
+- **When the workspace location cannot be resolved**, such as a `file://` URL
+  with a host (`file://./workspace`), the Workspace row reads misconfigured and
+  gives the reason. The other rows are unaffected.
 
 ### Pipelines
 
@@ -102,7 +105,8 @@ other columns every 10 seconds:
   - `running`: every instance that runs any of the pipeline's stages runs all of
     them, each `running`;
   - `degraded`: an instance has one of its stages `starting`, in `backoff` or
-    `exited`, or runs some of its stages but not all;
+    `exited`, runs some of its stages but not all, or, for a pipeline with a
+    webhook source, cannot bind the webhook port;
   - `stopped`: no instance runs any of its stages, because the engine is
     stopped, parked after a failed load, or not licensed.
 - **The graph comes from the engine's live counters**, the ones behind the
@@ -315,7 +319,7 @@ Volume are that sender's own:
 |---|---|
 | Kind | `mllp`, `webhook`, `file-drop` or `bridge` |
 | Format | `HL7v2` for an MLLP source, MLLP being HL7v2's framing, or for one whose store declares the `message_type` and `event_type` attrs `hl7v2Parser()` sets; otherwise `—` |
-| Listens on / Polls / Fed from | the host and port the source listens on, the feed a file-drop source polls, or the pipeline a bridge is fed from |
+| Listens on / Polls / Fed from | the host and port the source listens on, and a webhook source's path, the feed a file-drop source polls, or the pipeline a bridge is fed from |
 | Instances | each fresh instance that runs the source, with the state of its source stage (`starting`, `running`, `backoff`, `exited`). A bridge's instances carry no state |
 | Refused at ingest | the same line as on the Pipelines page — see [Refused inputs](#refused-inputs) |
 | Status mix | the units created in the last 24 hours, counted by the status each is at now, and each status's share of them |
@@ -323,7 +327,11 @@ Volume are that sender's own:
 | Senders | the sender breakdown, below |
 
 The address is the source's configuration with its `env()` values resolved. A
-webhook source takes no host and listens on every interface, shown as `[::]`.
+webhook source takes no host and listens on every interface, shown as `[::]`,
+on the port `INTERBOX_WEBHOOK_PORT` sets, followed by its path:
+`[::]:3002/vendor-a/response`. While that port cannot be bound, every webhook
+source shows `backoff` with the error on each instance; the engine's log names
+the port, the webhook pipelines and the error.
 A file-drop feed is shown as `sftp://host:port/dir`, `file:///dir`, `s3://bucket/prefix`,
 `gs://bucket/prefix` or `azure://account/container/prefix`, with no user name,
 endpoint or region. No secret is shown. **Units** opens the pipeline's units.
@@ -558,7 +566,8 @@ stages, its pipelines' sources, the inputs it refused, and its reload error.
   `INTERBOX_INSTANCE_ID`. Give each engine its own.
 - **Reload error.** The instance's current workspace load failure:
   `{ at, ref, message }`, with credentials in URLs removed. It is set when the
-  workspace fails to load, at boot or on a hot reload, and cleared when a load
+  workspace fails to load, at boot or on a hot reload, or when a workspace switch
+  has waited 30 seconds for old workers or actions to stop, and cleared when a load
   succeeds. A failed hot reload leaves the previous workspace running. A failed
   boot leaves the engine parked: the dashboard stays up, no stage runs, and the
   instance keeps beating with no stages. Either way the engine loads the
@@ -636,6 +645,8 @@ a feed whose every input is refused can be told apart from one that went quiet.
 | code | the input | the sending side gets |
 |---|---|---|
 | `too_large` | was an MLLP frame or a request body over the source's `maxBytes` | MLLP: the connection is dropped. HTTP: `413` |
+| `undecodable` | was an MLLP frame whose bytes do not fit its character set, or whose MSH-18 names one that cannot be decoded | MLLP `AE` |
+| `unauthorized` | was a request to a webhook source with a `secret` that did not carry it | HTTP `401` |
 | `store_misfit` | produced a row the store's codec cannot hold | MLLP `AE`, HTTP `500` |
 | `source_error` | made the source's own read mark or state write fail to store; MLLP and webhook sources never raise it | the source retries |
 | `copy_pending` | came while an earlier input's staged rows were not all copied yet | the source retries |
@@ -649,10 +660,12 @@ a feed whose every input is refused can be told apart from one that went quiet.
   zero, and the refusals of the last seconds before a crash are lost.
 - **The Pipelines page sums the fresh instances**, with the reason and time of
   the latest refusal. The Instances page shows each instance's total.
-- **Only the code is counted.** The refusal itself, with its message, is in the
-  engine's log, naming the pipeline.
+- **Only the code is counted.** The engine's log names the pipeline, the
+  error's kind and the code location it was thrown at, never its message,
+  which can hold the input.
 - **Not counted:** an input abandoned before its commit by a stop or by an HTTP
-  client that disconnected, and a request refused for its method or its secret.
+  client that disconnected, a request refused for its method, and a request to a
+  path no webhook source has.
 
 ## Environment
 
@@ -663,3 +676,4 @@ a feed whose every input is refused can be told apart from one that went quiet.
 | `INTERBOX_API_READ_TIMEOUT_MS` | `10000` | the time budget, in milliseconds, of one request behind the Dashboard's totals and error kinds and the Pipelines, Units and Unit pages, and of one action. Past it the request answers `504`. A value that is not a whole number above zero uses the default. The dashboard waits 20 seconds for most of these reads, so above that a slow read shows there as failed rather than as `504` |
 | `INTERBOX_INSTANCE_ID` | the host name | the instance's id on the Instances page. Give each engine its own |
 | `INTERBOX_STOP_GRACE_MS` | see [Updating the Engine](updating.md) | how long a stop lets started work finish; [The Workspace](workspace.md) covers it during a hot reload |
+| `INTERBOX_WEBHOOK_PORT` | `3002` | the TCP port every webhook source listens on, each at its own path. `0` lets the system pick a free port, which the Sources page shows. A value that is not a whole number from 0 to 65535 refuses the workspace's load, and the error names the variable. An MLLP source on the same port refuses the load too |
