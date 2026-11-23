@@ -64,6 +64,6 @@ so regenerating types never changes how messages are parsed at runtime.
 The types cover names and shapes; for optionality, repetition, table
 bindings, and message structure, consult the HL7v2 standard for the version
 your channel speaks. The package ships the spec data (v2.4/v2.5/v2.8.2) in
-`hl7v2-reference/` as JSON — it also powers the bundled AI-assistant skills,
+`hl7v2-reference/` as gzipped JSON — it also powers the bundled AI-assistant skills,
 so an assistant working in your workspace answers spec questions from the
 same source.
