@@ -75,8 +75,8 @@ side gets its answer:
   step runs.
 
 Use `.store(postgresStore({ codec: "json" }), { ordered: true })` when mapping
-reads state written by earlier units. Interbox maps one unit at a time across
-replicas, with row concurrency one, committing results and state before advancing.
+reads state written by earlier units. Interbox maps one unit at a time, with row
+concurrency one, committing results and state before advancing.
 An explicit `batch` must be `1`. Held, delayed, leased or staged inputs block later units; retries
 keep their place, while terminal errors allow progress.
 

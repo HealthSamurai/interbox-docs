@@ -899,9 +899,9 @@ By default the sender writes without version conditions and reads nothing, so it
 client needs write permission only. That leaves a late write possible: a request
 that times out can still be running at Aidbox when the item is retried, and if a
 newer version of the same resource is delivered before it lands, it restores the
-older values. One engine can hit this through a timeout and a retry. Several
-replicas make it more likely, since another pod takes over an item whose lease
-expired while its request is still in flight.
+older values. One engine can hit this through a timeout and a retry. A failover
+can too, since the new active replica retries an item whose request the old one
+still had in flight.
 
 Set `versionGuard: true` to fence late writes. Every write then carries a version
 condition: `If-Match` for an update, `If-None-Match: *` for a creation. Aidbox must

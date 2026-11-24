@@ -423,7 +423,7 @@ the codes the pipelines' units wait on, refreshed every 4 seconds. A unit waits
 on a code when a step failed it with `domainError("code",
 "unmapped_observation_code", …)` and a message laid out as
 
-```
+```text
 unmapped code "<code>" (<display>) · system <system> · map <concept map id>
 ```
 
@@ -451,23 +451,26 @@ where `(<display>)` may be left out and `(none)` stands for no system, such as
   approving one of them creates its file.
 - **Approve** writes the code's target into the concept map's file, and
   creates the file when the map has none yet, with no `useContext`: a step
-  finds the map by its id. It then retries, in every pipeline, every unit at
-  `error` whose message names that map and that code, as
+  finds the map by its id. Steps read concept maps from the build they run, so
+  Approve then publishes the workspace and waits up to 30 seconds for the
+  active replica to run that build. Then it retries, in every pipeline, every
+  unit at `error` whose message names that map and that code, as
   [Retry](#retry-and-defer) does and in runs of 1000, and says how many it
   re-queued. Each run takes only the units still at `error` on that code when
-  it starts, so a unit another retry has moved on is not sent again. Nothing
-  has to be reloaded first: a step's `ctx.translate` that misses reads the map
-  files again when they changed, so a retried unit finds the new mapping.
-- **When Approve fails after writing the mapping**, for example when the units
-  cannot be read within the budget, the mapping stays written and the code
-  leaves the queue, but units not yet retried stay at `error`. Find them on the
-  pipeline's Units page by `error_kind` `code/unmapped_observation_code` and
-  retry them there.
-- **Approve needs a `worktree` workspace**, the directory the engine bundles in
-  place. A `clone` workspace is reset by the engine on its next reload, so
-  Approve refuses it with `409`: add the element to the concept map in the
-  workspace repository and push it instead, then retry the units once the
-  engine has reloaded.
+  it starts, so a unit another retry has moved on is not sent again.
+- **When Approve fails after writing the mapping**, the mapping stays written.
+  If the workspace does not publish, or the active replica does not run the
+  build within 30 seconds, Approve answers `409`, the code stays in the queue
+  and no unit is retried: approve the code again once the build runs. If it
+  fails while retrying, for example when the units cannot be read within the
+  budget, the code leaves the queue, but units not yet retried stay at
+  `error`. Find them on the pipeline's Units page by `error_kind`
+  `code/unmapped_observation_code` and retry them there.
+- **Approve needs a `worktree` workspace**, the directory the workspace service
+  publishes in place. A mapping written into a `clone` workspace would not
+  reach its repository, so Approve refuses it with `409`: add the element to
+  the concept map in the workspace repository and push it instead, then retry
+  the units once the active replica runs the new build.
 
 ## Operator actions
 
@@ -545,6 +548,48 @@ A unit an action moves enters a new status, so a pipeline that subscribes to
 `received`, `deferred` or `sent` gets that event, delivered by the engine shortly
 after the action — see [Webhooks](../concepts/webhooks.md).
 
+### Pausing a pipeline
+
+A paused pipeline stops taking in and sending out, on every engine instance of
+the deployment, until you resume it. Use it when two deployments read the same
+storage location and you want one of them to load a delivery first, or to stop
+a load that is going wrong.
+
+The **Pipelines** page shows `Paused by <who> at <when>` on a paused pipeline,
+and a **Pause** or **Resume** button on each pipeline declared in the active
+workspace. Both ask you to confirm, naming
+the pipeline and the dashboard's address.
+
+While a pipeline is paused:
+
+| part | what it does |
+|---|---|
+| a file source | starts no new listing, marker read, or file read. The operation in progress finishes |
+| a workspace source that Interbox polls | starts no poll. A poll already running finishes |
+| a source that receives (MLLP, webhook) | keeps accepting and storing what it receives. Recovery of already accepted staged inputs continues |
+| the steps | process no unit. The units in progress when you pause finish |
+| the sender | sends nothing. A send in progress finishes |
+| a queue that consumers poll | hands out no new items. Consumers can acknowledge items they already received |
+
+Nothing is lost and nothing counts as a failed attempt. When you resume, each
+part goes on from where it stopped: within a second for the steps and the
+sender, and at the next poll for a source.
+The first file-drop poll after resuming restarts the waiting clock for unfinished
+deliveries. Time spent paused cannot make a delivery hit its abandonment timeout.
+
+- **The pause lives in the deployment's database.** It holds across restarts,
+  redeploys and workspace reloads. Pause after a rollout finishes: an instance
+  still on an earlier version does not know about it.
+- **A pause belongs to a pipeline name.** A renamed pipeline starts unpaused;
+  pause it once it appears. If you remove a paused pipeline, its historical
+  row loses the pause status and controls. Adding the same pipeline name back
+  restores its pause.
+- **Who paused** is the signed-in user's name, `admin` for the administrator
+  login, and `unknown` on a deployment that runs without authentication. Each pause
+  and resume writes an audit line.
+
+### Who can call them
+
 Retry and Defer are also open to the dashboard assistant's grant; deleting items
 is not — see
 [Securing Dashboard Access](secure-access.md#what-reaches-the-api-without-a-browser).
@@ -564,15 +609,18 @@ stages, its pipelines' sources, the inputs it refused, and its reload error.
   the dashboard shows them as one. When an instance finds its row written by
   another live process, it logs one error naming the duplicate
   `INTERBOX_INSTANCE_ID`. Give each engine its own.
-- **Reload error.** The instance's current workspace load failure:
-  `{ at, ref, message }`, with credentials in URLs removed. It is set when the
-  workspace fails to load, at boot or on a hot reload, or when a workspace switch
-  has waited 30 seconds for old workers or actions to stop, and cleared when a load
-  succeeds. A failed hot reload leaves the previous workspace running. A failed
-  boot leaves the engine parked: the dashboard stays up, no stage runs, and the
-  instance keeps beating with no stages. Either way the engine loads the
-  workspace again when a new commit arrives, on **Sync now**, or on `SIGHUP` —
-  see [The Workspace](workspace.md).
+- **Active or standby.** Every replica runs the stages that ingest: its MLLP
+  and webhook sources and the webhook router. Only the
+  [active replica](deploy.md#replicas) also runs the segments, the senders and
+  the other sources.
+- **Reload error.** The instance's current failure to load the published
+  workspace build: `{ at, ref, message }`, with credentials in URLs removed. It
+  is set when a build fails to load and cleared when one loads. A replica that
+  already runs a build keeps it. One with no build loaded stays unready, runs no
+  stage and keeps beating. Either way the replica tries again when a new build
+  is published, on its poll, or on `SIGHUP`. A build the workspace service could
+  not make shows on the Repository tab instead; see
+  [The Workspace](workspace.md).
 
 - **Large inputs and fan-outs are staged in Postgres.** An input whose steps
   before the store make more than 1,000 rows or 4 MiB, such as a big file, and a
@@ -674,6 +722,7 @@ a feed whose every input is refused can be told apart from one that went quiet.
 | variable | default | what it sets |
 |---|---|---|
 | `INTERBOX_API_READ_TIMEOUT_MS` | `10000` | the time budget, in milliseconds, of one request behind the Dashboard's totals and error kinds and the Pipelines, Units and Unit pages, and of one action. Past it the request answers `504`. A value that is not a whole number above zero uses the default. The dashboard waits 20 seconds for most of these reads, so above that a slow read shows there as failed rather than as `504` |
-| `INTERBOX_INSTANCE_ID` | the host name | the instance's id on the Instances page. Give each engine its own |
-| `INTERBOX_STOP_GRACE_MS` | see [Updating the Engine](updating.md) | how long a stop lets started work finish; [The Workspace](workspace.md) covers it during a hot reload |
+| `INTERBOX_INSTANCE_ID` | the host name | the instance's id on the Instances page. Give each engine its own. A restart under the same id takes the [active lease](deploy.md#replicas) without waiting for it to lapse |
+| `INTERBOX_STOP_GRACE_MS` | see [Updating the Engine](updating.md) | how long a stop lets started work finish; [The Workspace](workspace.md) covers it while a replica switches builds |
 | `INTERBOX_WEBHOOK_PORT` | `3002` | the TCP port every webhook source listens on, each at its own path. `0` lets the system pick a free port, which the Sources page shows. A value that is not a whole number from 0 to 65535 refuses the workspace's load, and the error names the variable. An MLLP source on the same port refuses the load too |
+| `INTERBOX_WORKSPACE_SERVICE_URL` | unset | the address of the workspace service, such as `http://interbox-workspace:3001`. The API forwards the Repository screen, workspace actions, the workspace UI, concept maps, unmapped codes and the assistant there. Unset, those routes answer `404` and the dashboard shows no assistant; see [The workspace service](deploy.md#the-workspace-service) |

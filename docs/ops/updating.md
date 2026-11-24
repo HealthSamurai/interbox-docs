@@ -25,48 +25,54 @@ as a new required Postgres extension or environment variable, is listed at the
 top of its release under **Upgrade Notes**.
 
 > Updating the **engine** (this page) is separate from updating your
-> **pipelines**. Pipeline changes are a workspace edit the running engine picks
-> up on its own by re-cloning and rebuilding — no image change. See
-> [Getting Started](../getting-started.md).
-
+> **pipelines**. A pipeline change is a workspace edit, with no image change:
+> the workspace service builds and publishes it, and the replicas load it. See
+> [The Workspace](workspace.md).
+>
 > Moving a **1.x installation to 2.0** is a cutover of its own: the workspace is
 > rewritten, and a one-off script moves the 1.x message history and Aidbox
 > fingerprints into a 2.0 pipeline while every engine is stopped. Follow
 > [Upgrading from 1.x](upgrade-from-1x.md) for it.
 
-## First upgrade to coordinated runtime generations
+## Upgrading from 2.4.x or older
 
-**Stop every legacy engine and API before starting a coordinated release.**
-Legacy processes do not register with the coordinator, so it cannot wait for
-their workers. Use `Recreate` or scale to zero and confirm all old containers
-have terminated. Deleting a pod object on an unreachable node is insufficient.
+From 2.5.0 every ready replica ingests, one replica processes, and a workspace
+service builds the workspace for the replicas ([Deployment](deploy.md#replicas)).
 
-A coordinated engine will not publish a generation while an engine from an earlier
-release has reported a heartbeat in the last few seconds. It stays `NotReady`, names
-that engine's instance and version in an ERROR log line and in its reload error, and
-retries on its own once the old engine stops. Legacy API processes report no
-heartbeat, so nothing detects them: stopping them is up to you.
-
-Enable replicas after this first upgrade. Later coordinated releases support
-rolling updates; a missing old process may require
-[confirmed termination](local-testing.md#a-cutover-blocked-by-a-missing-pod).
-
-**Set `ownership: "replica"` on custom listeners before adding replicas.** A
-custom source without `ownership` runs on one replica at a time. A listener left
-that way binds its port on one pod only, while the other pods stay ready and
-refuse the connections routed to them. Declare `ownership: "replica"` on each
-listener that must accept connections on every pod, and call `ctx.ready()` once
-it is bound; see [source ownership](../concepts/pipelines.md#your-own-source).
-While more than one replica runs, the engine logs an error for each source
-still without `ownership`. Declare `ownership: "singleton"` on a source meant to
-run on one replica to silence it.
-
-## Workspace actions must compile before activation
-
-Fix build errors in `server/actions.ts` and its static imports before updating.
-A failed actions build rejects the candidate workspace: reload keeps the old
-generation, while first boot stays unready. Workspaces without actions are
-unaffected. See [Workspace actions](workspace.md#workspace-actions).
+- **Move the image and chart 0.4.0 together.** Chart 0.4.0 adds the
+  [workspace service](deploy.md#the-workspace-service). An engine from 2.5.0
+  loads only a build the workspace service has published, so under an older
+  chart it stays unready. An older engine ignores the `workspace` argument, so
+  under chart 0.4.0 the workspace service's pod runs as one more engine of the
+  older version, and that pod turns unready while a pipeline is in backoff. A
+  deployment whose chart version floats takes 0.4.0 as soon as it is released,
+  and runs that way until its image moves to 2.5.0.
+- **Under Docker Compose, add the workspace service.** Run a second service from
+  the same image with the command `workspace`, the same environment and the
+  same workspace mount as the main service, and set
+  `INTERBOX_WORKSPACE_SERVICE_URL` on the main service to its port 3001.
+- **Rolling updates are the chart's default.** Chart 0.4.0 uses `RollingUpdate`
+  and routes to every ready replica. Once you run 2.5.0, set the readiness
+  probe to `/api/ready` ([Readiness](deploy.md#readiness)), so a new pod takes
+  traffic only once its listeners are up.
+- **The first rollout from 2.4.x hands processing over last.** Engines up to 2.4.x
+  run without the active lease. A 2.5.0 pod ingests as soon as it is ready, but
+  takes the lease only once no older engine has written a heartbeat in the last
+  6 seconds or still holds a lease on a unit or item. Until then it logs a
+  warning naming each such engine and its version.
+- **There is no way back to 2.4.x.** 2.5.0 drops the tables 2.4.x replicas
+  coordinate through, so a 2.4.x engine does not boot on the upgraded database.
+  During a rolling update the 2.4.x pods stop their workers, MLLP listeners
+  included, about 10 seconds after the first 2.5.0 pod migrates, and intake
+  waits until a 2.5.0 pod has loaded a published build. A sender resends what
+  got no acknowledgement.
+- **Mount data on every replica.** A replica runs the published build from its
+  own cache, so data the workspace reads that is not in its repository, and
+  every folder a file-drop source reads, must be mounted on each replica.
+- **Remove `ownership` from `defineSource` calls.** The SDK no longer declares
+  it: every `defineSource` source runs on the active replica only.
+- **Remove `INTERBOX_RUNTIME_ROLLBACK_INTENT`, `INTERBOX_RUNTIME_CONFIG_DIR` and
+  `INTERBOX_WORKSPACE_INSTANCE`.** The engine no longer reads them.
 
 ## Move the image tag
 
@@ -93,11 +99,19 @@ helm upgrade --install interbox healthsamurai/interbox \
   -n interbox --reuse-values --set image.tag=1.4.1
 ```
 
-Use `Recreate` for the first transition from an uncoordinated release. Later
-coordinated releases can use a reviewed rolling strategy; the operating
-requirements are in [Deployment](deploy.md#running-multiple-replicas). The value
-keys and pinning options (digest pin, `pullPolicy`) live in the
+Under `RollingUpdate`, the chart's default, the new pod loads the published
+build and ingests beside the old one, then takes the active lease when the old
+pod stops. An update pauses processing for seconds and keeps intake open; see
+[Replicas](deploy.md#replicas). The value keys and
+pinning options (digest pin, `pullPolicy`) live in the
 [chart's README](https://github.com/HealthSamurai/helm-charts/tree/main/interbox).
+
+During a rolling update, pods of the old and the new release run side by side
+on the new schema. Each release's migrations keep the previous release working,
+so the old pods keep ingesting, and the old active replica keeps processing,
+until they stop. Your own workspace changes follow the same rule while the
+replicas switch builds:
+[Changes the previous revision must survive](workspace.md#changes-the-previous-revision-must-survive).
 
 ## Keep the workspace SDK compatible
 
@@ -106,14 +120,14 @@ This is the one update step unique to Interbox. Keep the workspace's SDK in the
 — while on `0.x` — the same minor. So `1.3.0` ↔ `1.9.2` are compatible; `1.x` ↔
 `2.x`, or `0.4` ↔ `0.5`, are not.
 
-The engine checks this every time it loads a workspace, at boot and on reload,
-by comparing its own version with the `SDK_VERSION` on the `ChainRegistry` your
-workspace's entry exports:
+The workspace service checks this before it publishes a build, and each
+replica checks it again when it loads one, by comparing the engine's version
+with the `SDK_VERSION` on the `ChainRegistry` your workspace's entry exports:
 
 - **Different bucket:** the workspace is refused, with a message naming both
   versions and the `interbox pin` or `INTERBOX_VERSION` change that fixes it. A
-  version that cannot be parsed is refused the same way. A refused boot does not
-  start; a refused reload leaves the previous pipelines running.
+  version that cannot be parsed is refused the same way. The workspace service
+  does not publish a refused build, and the replicas keep the build they run.
 - **Same bucket, workspace SDK on a newer minor than the engine:** the workspace
   loads, and the engine logs one warning per load naming both versions. A feature
   the newer SDK added can still fail when it is first used, so move the engine up
@@ -142,9 +156,9 @@ pipeline or a mapper the 1.x way. Rewrite them in the chain DSL, as
 [Pipelines](../concepts/pipelines.md) describes, before you move to 2.0, and see
 [Upgrading from 1.x](upgrade-from-1x.md) for the rest of that move.
 
-A workspace that fails to load at boot leaves the engine parked: the API and
-the dashboard come up, and no pipeline runs. One that fails on a reload leaves
-the pipelines already running in place.
+A replica that has no build loaded and fails to load the published one stays
+unready and runs no pipeline; its API still answers. A replica that already
+runs a build keeps it when a newer one fails to load.
 
 Within a compatible bucket (a patch or minor bump on `1.x`) the workspace needs
 no change — just move the image tag. When you cross the boundary, align the
@@ -286,20 +300,28 @@ Every start — an update included — the container:
 
 1. ensures its `interbox` database exists (unless you've told it the database is
    pre-created);
-2. applies any new **migrations** — idempotent, and forward-only;
-3. builds the workspace bundle and loads the pipelines its `ChainRegistry`
-   declares;
-4. starts the engine and API.
+2. applies any new **migrations**, idempotent and forward-only;
+3. starts the engine and API;
+4. loads the current published build, runs its workspace migrations, prepares
+   the pipelines' storage and opens its listeners, and from then on reports
+   ready;
+5. takes the [active lease](deploy.md#replicas) and starts processing, or keeps
+   ingesting as a standby replica while another replica holds the lease.
+
+The workspace service's container runs the first two steps too, then starts
+the workspace service, which builds the workspace and publishes it.
 
 A 2.0 engine that finds rows left in the 1.x tables `interbox.hl7v2_in` or
 `interbox.resource_hash` logs a warning naming `bun scripts/import-1x.ts`: 2.0
 does not process them. See [Upgrading from 1.x](upgrade-from-1x.md).
 
-Coordinated updates pause processing until old workers and actions finish;
-pods may become unready during the handoff. MLLP sending systems must reconnect
-and retry when a listener closes. In-flight messages have the stop grace below
-to persist and ACK. After a lost ACK, a resend is a new input unless the upstream
-protocol or workspace supplies a durable duplicate identity.
+In a rolling update the new pod ingests as soon as it is ready. The old pod
+stops processing and releases the active lease, which another ready pod takes,
+then closes its listeners. MLLP sending systems must reconnect and retry when a
+listener closes; the Service sends the new connection to a ready pod. In-flight
+messages have the stop grace below to persist and ACK. After a lost ACK, a
+resend is a new input unless the upstream protocol or workspace supplies a
+durable duplicate identity.
 
 On a stop the engine takes no new work and gives what it has started a grace
 period to finish: 10 seconds by default, set in milliseconds by
@@ -338,36 +360,3 @@ expect. So:
 - After a 1.x import, a 1.x image no longer sees the moved rows: going back to
   1.x means restoring the backup taken before the cutover. See
   [Upgrading from 1.x](upgrade-from-1x.md#rolling-back).
-
-### Authorize the rollback
-
-Once a newer image or a changed configuration value has started processing,
-Interbox retires the one it replaced. Pods that start with a retired image or a
-retired configuration stay `NotReady`, and the pods already running keep
-processing. This stops a pod left over from the previous release from switching
-the deployment back during a rolling update.
-
-To roll back on purpose, add `INTERBOX_RUNTIME_ROLLBACK_INTENT` to the same
-rollout, with a value this deployment has not used before, such as a timestamp:
-
-```sh
-INTERBOX_RUNTIME_ROLLBACK_INTENT=rollback-2026-11-12T10:40
-```
-
-Keep the value until that rollout finishes. Each value works once, so the next
-rollback needs a new one. `helm rollback` and a reverted ConfigMap value both
-need it. The value can sit in the ConfigMap next to the other settings: it is not
-part of the business configuration, so removing it later is not a configuration
-change.
-
-A pod that waits for this says so in its engine log and in the `reload error`
-column of the dashboard's Instances page:
-
-```text
-prepared runtime cannot replace the current intent: this engine image was
-replaced by a newer one; to roll back to it, deploy it with a new
-INTERBOX_RUNTIME_ROLLBACK_INTENT value
-```
-
-Workspace code is different: a new Git commit that restores earlier content
-needs no rollback intent.

@@ -63,11 +63,13 @@ items.
 
 Two things to account for beyond steady state:
 
-- **Boot does real work.** For a remote workspace the engine does a shallow
-  `git clone` + `bun install` + `bun build` on startup (and on every reload).
-  That is a transient CPU spike, a few hundred MB, and requires **outbound
-  network** plus a writable temp dir ([Network Access](network.md) lists the
-  hosts).
+- **The workspace service does the builds.** For a remote workspace it does a
+  shallow `git clone`, `bun install` and a bundle at start and for each new
+  revision: a transient CPU spike and a few hundred MB, with **outbound
+  network** and a writable temp dir ([Network Access](network.md) lists the
+  hosts). It also runs the dashboard assistant. It runs no pipeline, so it
+  does not grow with traffic. A replica only unpacks each published build, at
+  most 100 MB, and runs its migrations.
 - **The image carries the dashboard assistant SDK.** Factored into the ~1 GB
   image size, not into steady-state RAM.
 
@@ -87,12 +89,13 @@ live metrics: three for the reference pipeline, held even when no message
 arrives. Count both against the default `max_connections = 100` as you add
 pipelines.
 
-These limits are **per pod**. Multiply pools by the maximum overlapping pod count,
-including rollout surge. Add coordination, listener, metrics, action and workspace
-connections plus headroom. Use direct or session-pooled PostgreSQL connections.
-
-Budget destination traffic across all replicas too, including retries. An ordered
-store serializes that pipeline's mapping; other work still runs concurrently.
+These limits are **per pod**. Every replica runs the threads of its MLLP and
+webhook sources and the webhook router; only the
+[active replica](deploy.md#replicas) runs the segment, sender and other source
+threads, so a standby replica holds fewer connections. The workspace service
+runs no engine threads but has an API pool of its own. Use direct or
+session-pooled PostgreSQL connections. An ordered store serializes that
+pipeline's mapping; other work still runs concurrently.
 
 The template ships only `max_wal_size = 4GB`, `wal_compression = on`, and
 `pg_stat_statements`; **`shared_buffers` is left at the Postgres default of
@@ -336,9 +339,11 @@ dashboard's sender panel shows how many items wait for delivery, and why.
 
 - Estimates, not benchmarks — size from the tiers above, then adjust from the
   live signals once real traffic arrives.
-- Multiple replicas require coordinated engine releases, compatible workspaces,
-  separate pod caches and the [deployment contract](deploy.md#running-multiple-replicas).
-  The chart's default replica count is not a deployment-wide capacity budget.
+- Replicas add availability and intake capacity, not processing throughput:
+  only the [active replica](deploy.md#replicas) processes, so size that one
+  pod. Give every replica the same resources, since any of them can take the
+  active lease. The workspace service needs memory for its builds and the
+  assistant, and no more as traffic grows.
 - A unit's disk cost depends on what its pipeline stores, the search text it
   sets and the indexes it declares — measure your own average once you have
   real traffic.

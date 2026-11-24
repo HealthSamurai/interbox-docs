@@ -48,7 +48,7 @@ INTERBOX_AUTH_CLIENT_SECRET=<optional; PKCE carries a public client alone>
 
 Register `https://<your host>/api/auth/callback` as the redirect URI.
 
-#### The sign-in button names your provider
+### The sign-in button names your provider
 
 With single sign-on enabled the button reads **Sign in with Google**, **Sign in
 with Okta**, and so on. That name is derived from `INTERBOX_AUTH_ISSUER` alone:
@@ -86,7 +86,7 @@ anonymous visitor to — but if naming your identity provider to strangers is
 more than you want to publish, the answer is to keep the page off the open
 internet. See [Additional layers](#additional-layers).
 
-#### What the issuer is, and how to find it
+### What the issuer is, and how to find it
 
 `INTERBOX_AUTH_ISSUER` is not an endpoint you call — it is the provider's
 **identity**. It is the value the provider puts in the `iss` claim of every
@@ -211,7 +211,7 @@ In the Google Cloud console, under **APIs & Services → Credentials**, create a
 **OAuth client ID** of type *Web application* and add one authorised redirect
 URI:
 
-```
+```text
 https://interbox.internal.example/api/auth/callback
 ```
 
@@ -318,7 +318,7 @@ Applications → App registrations → New registration**. Give it a name, choos
 **Accounts in this organizational directory only**, and under *Redirect URI*
 pick platform **Web** with:
 
-```
+```text
 https://interbox.internal.example/api/auth/callback
 ```
 
@@ -550,7 +550,7 @@ read it with `document.cookie`; take it from your browser's storage inspector.
 It ends every session, every assistant conversation, and every conversation's
 credential, yours among them, so it signs you out too.
 
-Administrator sessions survive restarts and work across API replicas. Starting a
+Administrator sessions survive restarts and failovers. Starting a
 replica with a new `INTERBOX_AUTH_ADMIN_PASSWORD` revokes previous administrator
 sessions and assistant grants; replicas with the old password cannot sign users in.
 Disabling the account also revokes access. OIDC sessions are unaffected.
@@ -560,21 +560,17 @@ plaintext passwords. A replaced password never comes back: a replica started wit
 one parks its API instead of restoring it, so rotate to a new password, also when
 rolling back. Disabling the account works at any time.
 
-Trusted-device cookies survive restarts across replicas. They select the reserved
+Trusted-device cookies survive restarts and failovers. They select the reserved
 password verification lane; users still need a password and a valid session.
-
-The database retains up to 2,000 assistant transcript events per conversation.
-Reset and sign-out remove them; expired or revoked sessions are cleaned up within
-a minute. With authentication disabled, inactive conversations expire after 30 days.
-Generated files and provider transcripts follow their own retention policies.
 
 Be precise about what ending a session does to it. Interbox stops the agent
 process, drops the conversation from memory, and forgets the identifier it would
 have used to resume it — so the conversation cannot be continued, by anyone,
 without starting a new one. It does **not** delete what the agent itself wrote
-under its own home directory. Those files are inside the container and share its
-lifetime, so a container that is replaced on each deploy discards them; one with
-a persistent volume mounted over that path does not. If you have a retention
+under its own home directory. Those files are inside the workspace service's
+container, where the assistant runs, and share its lifetime, so a container
+that is replaced on each deploy discards them; one with a persistent volume
+mounted over that path does not. If you have a retention
 obligation that reaches transcripts, treat that as a filesystem question and not
 as something signing out has already handled.
 
@@ -805,12 +801,11 @@ with it and refuse a hospital's feed at the TCP level.
 `/api/auth/status` names the variables so an operator can see what to fix.
 `/api/ready` answers `503` while parked or while the local engine is not ready.
 
-> A readiness probe on `/api/ready`, as [Deployment](deploy.md#whats-different-about-deploying-interbox)
-> sets up, takes a parked pod out of every Service that selects it, the MLLP
-> Service included, and that pod's feed is refused at the TCP level until the
-> variables are fixed. Check them before a rollout. With `Recreate` or one replica,
-> every pod parks at once; a rolling update stops at the first parked pod while
-> the old pods keep serving.
+> With `/api/ready` as the readiness probe ([Readiness](deploy.md#readiness)), a
+> parked replica leaves the Services and receives no feeds, while its engine
+> keeps processing if it holds the active lease. A rolling update stops at a
+> parked new pod while the old pods keep serving, so check the variables before
+> a rollout.
 
 ## Turning it off
 
@@ -833,21 +828,6 @@ credential the dashboard mints for one assistant conversation. There is no
 deployment-wide bearer token to configure, and nothing you can set that creates
 one. Every credential this deployment accepts therefore expires, and every one of
 them can be revoked — see [What a session is](#what-a-session-is).
-
-### Assistant replicas and interrupted requests
-
-Each conversation has one API owner. Any replica can accept commands or stream
-its database-backed events. `Last-Event-ID` resumes a stream within the retained
-2,000 events; opening a stream does not start an agent.
-
-After owner loss and lease expiry, pending prompts fail and its API grant expires.
-Interbox does not replay them. Send a new prompt to start a fresh agent with the
-retained transcript. **Inspect external effects before retrying:** an accepted
-command, file write or request may have completed despite the interruption.
-
-A conversation allows 32 outstanding commands; queued prompts expire after ten
-minutes. Completion clears payloads and retains metadata for ten minutes. The
-broker stores grant hashes; each new owner issues a fresh session-bound grant.
 
 ### The assistant carries a grant
 
@@ -880,11 +860,11 @@ nothing outside them. Seven read:
 
 Four write:
 
-- `POST /api/repository/pull` — updates the workspace checkout and reloads the
-  engine
-- `POST /api/concept-maps/:map/entries` — rewrites clinical code translation
+- `POST /api/repository/pull`: updates the workspace service's checkout and
+  publishes it to the replicas
+- `POST /api/concept-maps/:map/entries`: rewrites clinical code translation
 - `POST /api/pipelines/:name/units/retry` and
-  `POST /api/pipelines/:name/units/defer` — Retry or Defer units, up to 1000
+  `POST /api/pipelines/:name/units/defer`: Retry or Defer units, up to 1000
   per request; a Retry re-queues a unit already sent, too
 
 Nothing else: no SQL console, no workspace actions, no repository file writes, no

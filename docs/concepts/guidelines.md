@@ -75,10 +75,10 @@ messages get re-queued during triage. So:
 1. Send a sample message to the pipeline's source.
 2. Fix the step.
 3. **A code fix needs a reload before retry** — the engine runs a bundled
-   copy of your workspace, so retrying immediately re-hits the old code. The
-   engine reloads on its poll (`INTERBOX_WORKSPACE_POLL_MS`, 30 s by
-   default), or at once from **Sync now** on the dashboard's Repository tab —
-   see [The Workspace](../ops/workspace.md).
+   copy of your workspace, so retrying at once re-hits the old code. The
+   workspace service publishes the fix on its poll (`INTERBOX_WORKSPACE_POLL_MS`,
+   30 s by default), or at once from **Sync now** on the dashboard's Repository
+   tab, and the engine loads it; see [The Workspace](../ops/workspace.md).
 4. Retry the specific failed messages and verify they clear.
 
 ## Keep the workspace shaped like the template

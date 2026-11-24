@@ -318,49 +318,15 @@ reference, though not a number; `run` and `start` get the config with them
 resolved, and an unset variable stops the workspace from loading. `type` names
 the source in the dashboard and follows the pipeline name rules.
 
-Custom sources default to `ownership: "singleton"`: one replica runs `start` or
-`run` under a renewable PostgreSQL lease. If that replica stops without releasing
-it, another takes over within about 30 seconds, once the lease expires. A
-replacement resumes from the cursor committed by `receive`, so even finite sources
-must persist progress.
-
-Lease loss aborts `signal` and fences late input/cursor writes. Pass the signal to
-external operations; accepted writes or acknowledgements can still finish and must
-tolerate retries.
-
-A push listener that must bind on every replica declares `ownership: "replica"`:
-
-```ts
-const listener = defineSource({
-  type: "custom-listener",
-  ownership: "replica",
-  run: async (_config, ctx: SourceRunContext<string>) => {
-    const server = Bun.serve({
-      port: 9000,
-      fetch: async request => {
-        await ctx.receive(await request.text());
-        return new Response(null, { status: 204 });
-      },
-    });
-    ctx.ready();
-    try {
-      if (!ctx.signal.aborted) await new Promise(resolve => ctx.signal.addEventListener("abort", resolve, { once: true }));
-    } finally {
-      await server.stop(true);
-    }
-  },
-});
-```
-
-Call `ctx.ready()` after binding; the pod stays unready until then. Singleton
-standbys remain ready while waiting for ownership. Pull sources cannot use replica
-ownership. While more than one replica runs, a push source with no `ownership`
-logs an error naming `ownership: "replica"`; a source declaring
-`ownership: "singleton"` does not.
-
-Replica listeners commit receives independently and cannot use shared source
-`state()`. Handle upstream retries through input identifiers and acknowledgements.
-Stop accepting inputs on abort; in-flight receives have the shutdown grace to finish.
+A source written with `defineSource` runs on the
+[active replica](../ops/deploy.md#replicas) only, one copy of it; MLLP and
+webhook sources listen on every replica. A replica that takes the active lease
+starts each source again, so a source resumes from the state its last `receive`
+committed, and even a finite source must keep its progress there. A replica
+that loses the active lease stops its sources, which aborts `signal`, and a
+`receive` it still runs rejects without storing anything. Pass `signal` to external operations: a
+write or an acknowledgement already accepted upstream can still finish, so it
+must tolerate a retry.
 
 ## Bridges
 

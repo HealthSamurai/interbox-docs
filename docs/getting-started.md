@@ -47,7 +47,7 @@ bun test
 
 ## How a workspace is laid out
 
-```
+```text
 src/
   index.ts             # imports ./pipelines, re-exports ChainRegistry for the engine
   mappers/
@@ -175,16 +175,17 @@ times that carry no offset:
 
 ## How the engine loads it
 
-**The engine bundles `src/index.ts` itself** — a workspace has no `build`
-step of its own. It takes one `INTERBOX_WORKSPACE_GIT_URL`: a remote URL
-(clones + `bun install`s, for deploy) or a local `file://`/bare path (bundles
-the live working tree in place, no clone/install, for a fast edit →
-hot-reload loop). A pipeline change reloads into its **own runtime**, not by
-restarting `interbox` itself: in local dev the engine polls the workspace
-(`INTERBOX_WORKSPACE_POLL_MS`, 2s in the template's `docker-compose.yaml`)
-and swaps workers in place; elsewhere, trigger the same reload from the
-dashboard ("Sync now"). A reload that fails leaves the running pipelines as
-they were, and the dashboard shows why it failed.
+**Interbox bundles `src/index.ts` itself**: a workspace has no `build` step
+of its own. The [workspace service](ops/deploy.md#the-workspace-service) takes
+one `INTERBOX_WORKSPACE_GIT_URL`: a remote URL (clones and runs `bun install`,
+for deploy) or a local `file://` or bare path (bundles the live working tree in
+place, no clone or install, for a fast edit and reload loop). It publishes each
+build to PostgreSQL, and the engine swaps its workers to the new build without
+restarting `interbox` itself. In local dev the workspace service watches the
+workspace (`INTERBOX_WORKSPACE_POLL_MS`, 2s in the template's
+`docker-compose.yaml`); elsewhere, it follows the branch, and **Sync now** on
+the dashboard checks at once. A build that fails leaves the running pipelines
+as they were, and the dashboard shows why it failed.
 
 The URL scheme only picks a default. What differs between the two is the
 **lifecycle**, set by `INTERBOX_WORKSPACE_MODE`: `clone` means the engine owns a

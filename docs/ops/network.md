@@ -11,12 +11,12 @@ few that default to a public host can be pointed inside too.
 |---|---|---|---|---|
 | PostgreSQL | from `DATABASE_URL`, usually 5432 | All Interbox state. At start the engine also creates its database and applies migrations. | Always | `DATABASE_URL` |
 | Aidbox | from the URL | The Aidbox sender; health and licence status on the dashboard; the assistant's Aidbox queries | Whenever a pipeline sends; every few seconds while a dashboard tab is open; when the assistant queries Aidbox | The `url` the workspace passes to `aidbox()`, by convention `env("AIDBOX_URL")`; `AIDBOX_URL` for the dashboard and the assistant |
-| Workspace git remote | from the URL: SSH 22 or HTTPS 443 | Clone, fetch on reload, `git ls-remote` to notice a moved ref. The Repository screen lists branches and loads older history. Push only at `INTERBOX_WORKSPACE_ACCESS=push` or `apply`. | At start, on every reload, every `INTERBOX_WORKSPACE_POLL_MS` (30 s by default; the Helm chart sets 5 s) | `INTERBOX_WORKSPACE_GIT_URL` |
-| npm registry, `registry.npmjs.org` by default | HTTPS 443 | `bun install` of the workspace's dependencies | Clone mode: at start and on every reload. A workspace mounted at `/workspace`: every container start. | `BUN_CONFIG_REGISTRY` or `NPM_CONFIG_REGISTRY`, or the workspace's own `.npmrc` / `bunfig.toml` |
+| Workspace git remote, from the workspace service only | from the URL: SSH 22 or HTTPS 443 | Clone, fetch on every sync, `git ls-remote` to notice a moved ref. The Repository screen lists branches and loads older history. Push only at `INTERBOX_WORKSPACE_ACCESS=push` or `apply`. | At start, on every sync, every `INTERBOX_WORKSPACE_POLL_MS` (30 s by default; the Helm chart sets 5 s) | `INTERBOX_WORKSPACE_GIT_URL` |
+| npm registry, `registry.npmjs.org` by default, from the workspace service only | HTTPS 443 | `bun install` of the workspace's dependencies | Clone mode: at start and on every sync. A workspace mounted at `/workspace`: every start of the workspace service's container. | `BUN_CONFIG_REGISTRY` or `NPM_CONFIG_REGISTRY`, or the workspace's own `.npmrc` / `bunfig.toml` |
 | Terminology server, `https://tx.fhir.org/r4` by default | HTTPS 443 | LOINC `$expand` and `$lookup` | When someone searches LOINC on the dashboard, or the dashboard assistant looks a code up | `TERMINOLOGY_URL`; `TERMINOLOGY_AUTH` is sent as the `Authorization` header as written |
 | Licence portal, `aidbox.app` | HTTPS 443 | After "Activate" on the dashboard: exchanges the sign-in code and requests a development licence | Only when someone activates | Supply the licence in `INTERBOX_LICENSE` and this is never called |
 | Your OIDC identity provider | HTTPS 443 | Discovery, signing keys, token, userinfo | Discovery on the first sign-in after start, the rest on sign-ins | `INTERBOX_AUTH_ISSUER` — see [Securing Dashboard Access](secure-access.md) |
-| Model API for the dashboard assistant, `api.anthropic.com` by default | HTTPS 443 | The assistant | The agent starts when someone opens the assistant panel, and calls the model on every prompt | `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` |
+| Model API for the dashboard assistant, `api.anthropic.com` by default, from the workspace service only | HTTPS 443 | The assistant | The agent starts when someone opens the assistant panel, and calls the model on every prompt | `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` |
 | Endpoints the workspace declares | from the workspace's config | FHIR systems (generic, Aidbox, Epic, Paragon) and their token endpoints, outbound webhooks | Whenever a pipeline uses them | Workspace code. A webhook is only sent to a host listed in `WEBHOOK_EGRESS_ALLOWLIST` — see [Webhooks](../concepts/webhooks.md). |
 | DNS | UDP and TCP 53 | Name resolution | Always | — |
 
@@ -31,15 +31,11 @@ engine, for one, defaults to an external server
 ## What each one is needed for
 
 Without PostgreSQL nothing runs. In clone mode, a git remote or npm registry that
-cannot be reached at start stops the workspace from loading: the API and the
-dashboard come up, but the engine stays parked and no pipeline runs. A workspace
-mounted at `/workspace` is stricter, because the container exits when its
-install fails.
-
-A parked engine retries on its own only if git was the problem. When git answered
-and `bun install` failed, the poll waits for the branch to move, so after fixing
-an npm egress rule press **Sync now** on the Repository tab or restart the pod. A
-failure on a later reload leaves the running pipeline in place.
+the workspace service cannot reach stops it from publishing: the replicas keep
+running the build already published, and with none published yet they stay
+unready and run no pipeline. The workspace service tries again on its next poll.
+A workspace mounted at `/workspace` is stricter, because the workspace service's
+container exits when its install fails.
 
 Everything else is needed only by the feature that uses it. Without the
 terminology server, LOINC search fails and the rest of the dashboard works.
@@ -67,12 +63,15 @@ from that host. In clone mode the workspace's own install scripts run, and so do
 those of the dependencies Bun trusts; a script that downloads something reaches
 the host it downloads from.
 
-**No clone and no install by the engine.** In `worktree` mode the engine builds a
-directory that is already there and does not clone or install it
+**No clone and no install by the replicas.** A replica loads the build the
+[workspace service](deploy.md#the-workspace-service) publishes to PostgreSQL, so
+the git remote, the npm registry and the model API need to be reachable from
+the workspace service's pod alone. In `worktree` mode the workspace service
+builds a directory that is already there and does not clone it
 ([clone or worktree](workspace.md#clone-or-worktree)). The image's entrypoint
-still runs `bun install` for a workspace mounted at `/workspace`, and the
-dashboard's Repository screen still contacts the checkout's `origin` if it has
-one.
+still runs `bun install` for a workspace mounted at `/workspace` in the
+workspace service's container, and the Repository screen still contacts the
+checkout's `origin` if it has one.
 
 **The assistant.** It runs Anthropic's Claude Code, which has traffic of its own
 beyond the model API: updates, telemetry, error reporting and feature flags.
@@ -80,8 +79,8 @@ beyond the model API: updates, telemetry, error reporting and feature flags.
 `CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1` the plugin marketplace
 auto-install it leaves out
 ([Claude Code environment variables](https://code.claude.com/docs/en/env-vars)).
-The agent also runs shell commands inside the pod, so it reaches whatever the
-pod's egress allows, and it reads the workspace's `.mcp.json` and
+The agent also runs shell commands inside the workspace service's pod, so it
+reaches whatever that pod's egress allows, and it reads the workspace's `.mcp.json` and
 `.claude/settings.json`, so an MCP server or hook configured there is one more
 destination.
 
