@@ -44,9 +44,8 @@ service builds the workspace for the replicas ([Deployment](deploy.md#replicas))
   loads only a build the workspace service has published, so under an older
   chart it stays unready. An older engine ignores the `workspace` argument, so
   under chart 0.4.0 the workspace service's pod runs as one more engine of the
-  older version, and that pod turns unready while a pipeline is in backoff. A
-  deployment whose chart version floats takes 0.4.0 as soon as it is released,
-  and runs that way until its image moves to 2.5.0.
+  older version. A deployment whose chart version floats takes 0.4.0 as soon as
+  it is released, and runs that way until its image moves to 2.5.0.
 - **Under Docker Compose, add the workspace service.** Run a second service from
   the same image with the command `workspace`, the same environment and the
   same workspace mount as the main service, and set
@@ -313,7 +312,9 @@ the workspace service, which builds the workspace and publishes it.
 
 A 2.0 engine that finds rows left in the 1.x tables `interbox.hl7v2_in` or
 `interbox.resource_hash` logs a warning naming `bun scripts/import-1x.ts`: 2.0
-does not process them. See [Upgrading from 1.x](upgrade-from-1x.md).
+does not process them. A migration drops the 1.x tables if both are empty when
+it runs. It runs once, so tables that the import empties later stay; see
+[Upgrading from 1.x](upgrade-from-1x.md#once-the-cutover-is-final).
 
 In a rolling update the new pod ingests as soon as it is ready. The old pod
 stops processing and releases the active lease, which another ready pod takes,

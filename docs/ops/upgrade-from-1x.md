@@ -658,6 +658,11 @@ back without a restore:
    migrations changed. Anything 2.0 received meanwhile stays in 2.0's tables, so
    the senders must send it again.
 
+**Once the engine has dropped the 1.x tables**, neither way back works without a
+restore: a 1.x image has no tables to run on, and the copied rows have nowhere
+to go. See [Once the cutover is final](#once-the-cutover-is-final) for when that
+happens.
+
 ### Running the import again after a rollback
 
 The script refuses with `target_has_units`: the pipeline already holds 2.0
@@ -687,13 +692,22 @@ two ways above.
 
 ## Once the cutover is final
 
-When you will not roll back, free the space and clear what only a rollback
-needs:
+When you will not roll back, free the space the in-database copy takes:
 
 ```sql
 DROP SCHEMA interbox_pre2 CASCADE;
-TRUNCATE interbox.ingestion_queue;
 ```
 
-`ingestion_queue` holds the 1.x deliveries that were pending at the cutover. The
-2.0 engine does not read it, and it is useful only if you return to 1.x.
+The engine drops the 1.x tables itself. One of its migrations removes
+`hl7v2_in`, `ingestion_queue`, `resource_hash` and `source_state` if
+`hl7v2_in` and `resource_hash` are both empty when it runs, and leaves them
+alone otherwise, so a database whose rows were never imported keeps them for the
+script. The migration runs once per database, at the first start of the release
+that ships it:
+
+- **If the import ran before that release**, the 1.x tables are gone after its
+  first start, `ingestion_queue` with the 1.x deliveries that were pending at
+  the cutover.
+- **If the import ran on that release or a later one**, the emptied tables stay.
+  Nothing reads them. `TRUNCATE interbox.ingestion_queue;` frees the pending 1.x
+  deliveries, which are useful only if you return to 1.x.
