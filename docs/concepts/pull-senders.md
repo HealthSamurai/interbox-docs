@@ -68,7 +68,7 @@ The step sets both the key and the order, and both matter:
 
 | field | default | what it does |
 |---|---|---|
-| `path` | required | where the App's endpoint calls, on the engine's webhook port, `INTERBOX_WEBHOOK_PORT` (`3002` when unset). It starts with `/`, holds no `?` or `#`, and matches exactly; a trailing `/` is ignored, and a path a request would carry percent-encoded, such as `/a b`, is refused at load |
+| `path` | required | where the App's endpoint calls, on the engine's webhook port, `INTERBOX_WEBHOOK_PORT` (`3002` when unset). It starts with `/`, holds no `?` or `#`, and matches exactly; a trailing `/` is ignored, and a path a request would carry percent-encoded, such as `/a b`, [parks the pipeline](../ops/workspace.md#parked-pipelines) |
 | `secret` | required | the App's secret, as `env("NAME")` with no default. A literal string, or a default, is refused at load |
 | `leaseMs` | required | how long a received item stays at one consumer before it is served again |
 | `batch` | 100 | items per sender pick |

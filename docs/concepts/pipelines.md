@@ -315,7 +315,8 @@ parameter, and the rows' type is the `Row` of `SourceRunContext<Row>` on the
 second, as above; type arguments, `defineSource<"lab-feed", Config, string>`,
 say the same. A pipeline may pass any string of the config as an `env()`
 reference, though not a number; `run` and `start` get the config with them
-resolved, and an unset variable stops the workspace from loading. `type` names
+resolved, and an unset variable
+[parks the pipeline](../ops/workspace.md#parked-pipelines). `type` names
 the source in the dashboard and follows the pipeline name rules.
 
 A source written with `defineSource` runs on the

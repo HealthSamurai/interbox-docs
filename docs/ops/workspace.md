@@ -257,10 +257,22 @@ no restart. The workspace service publishes a new build when:
   the same interval, and after each dashboard save.
 
 The workspace service builds the revision and runs the replicas' load and
-planning checks on it before it publishes, so a commit those checks refuse is
-never published: the replicas keep the build they run, and the Repository tab
-shows the error. The checks that read PostgreSQL, such as a store codec changed
-while units wait, run only on the replicas.
+planning checks on it before it publishes. A commit that fails a check of the
+whole workspace, such as a missing `ChainRegistry` export, an SDK outside the
+engine's version range or two pipelines on one webhook path, is never
+published: the replicas keep the build they run, and the Repository tab shows
+the error. A pipeline that fails its own checks is
+[parked](#parked-pipelines) instead, and the rest of the build is published.
+The checks that read PostgreSQL, such as a store codec changed while units
+wait, run only on the replicas.
+
+When a publish fails, the workspace service tries the same revision again after
+30 seconds, and after each further failure waits twice as long, up to 10
+minutes, so a git or package registry outage clears without a new commit. A new
+commit, a branch switch, **Sync now**, **Publish** and **Discard and update**
+each try again at once. It logs the first error in full and a repeat of the same
+error as one short warning. A replica that has no build yet names the failed
+revision and its error on the Instances page.
 
 Each replica loads a new build when PostgreSQL announces it, on its own poll at
 the same interval, and on `SIGHUP`. It loads the build **first**: it unpacks it,
@@ -272,6 +284,32 @@ old ones, so new connections are never refused; an open MLLP connection is
 closed once its in-flight message is answered, and the sending system
 reconnects. On other systems the listeners close first and refuse connections
 until the new ones are up.
+
+### Parked pipelines
+
+A pipeline is parked when its own source, store, sender or webhook settings fail the
+checks, for example when its source's config reads an `env()` variable the
+engine's environment does not set. The workspace service publishes the build
+with the pipeline parked, and every replica runs the other pipelines and no
+stage of the parked one:
+
+- The Pipelines page shows it as `Parked, not running` with the error, and the
+  workspace service and each replica log the error once per build.
+- Its MLLP port is not served. A request to its webhook source's or pull
+  sender's path gets `503` with `Retry-After: 60`, so the sending system
+  retries instead of dropping the input; when the path itself is what fails
+  the checks, the request gets `404`. Its storage and the units it already
+  stored stay, and inputs another pipeline sends into it with `intoPipeline()`
+  wait in its queue.
+- A pipeline that ran in the previous build stops when the replicas load the
+  build that parks it.
+- A pipeline that sends into a parked pipeline whose webhook URL cannot be
+  resolved is parked too, because it reports that pipeline's events.
+
+To run it again, fix its configuration in a new revision, or set the missing
+variable on the replicas and the workspace service and restart them. On start,
+the workspace service checks the current build again and publishes the same
+revision with the pipeline running.
 
 ### Changes the previous revision must survive
 

@@ -96,7 +96,8 @@ there is no license, so you can activate one from the dashboard. It answers
 `503` while the replica has no build loaded (none is published yet, or the
 published one fails to load), while sign-in is
 [parked](secure-access.md#when-it-is-misconfigured-the-engine-keeps-running),
-and while the replica stops. A pipeline in backoff and the active lease do not
+and while the replica stops. A pipeline in backoff, a
+[parked pipeline](workspace.md#parked-pipelines) and the active lease do not
 count, so a standby replica is ready.
 
 Readiness steers traffic and gates rollouts: the Services send traffic only to
@@ -147,11 +148,19 @@ main service to its address.
 - **A build is checked before it is published.** The workspace service loads
   the bundle in a separate thread and runs the checks a replica runs on load.
   They need a `ChainRegistry` export, no 1.x registrations, a compatible SDK
-  version, a readable `LookupRegistry`, and valid options on each pipeline's
-  source, steps and sender, with no webhook path that two pipelines share. A
-  build that fails is not published, the replicas keep the build they run, and
-  the Repository screen shows the error. The checks that read PostgreSQL run
-  only on the replicas.
+  version, a readable `LookupRegistry`, and no webhook path that two pipelines
+  share. A build that fails one of these is not published, the replicas keep
+  the build they run, and the Repository screen shows the error. A pipeline
+  whose own source, store, sender or webhook settings fail the checks is
+  [parked](workspace.md#parked-pipelines): the build is published, and no
+  replica runs that pipeline. The checks that read PostgreSQL run only on the
+  replicas.
+- **A failed publish is retried.** The workspace service tries the same
+  revision again after 30 seconds, doubling the wait after each further
+  failure up to 10 minutes, and at once on a new commit, a branch switch,
+  **Sync now**, **Publish** or **Discard and update**. Until a first build is
+  published, each replica names the failed revision and its error on the
+  Instances page.
 - **The workspace service needs the replicas' environment.** The check
   resolves `INTERBOX_WEBHOOK_PORT` and the environment variables that sources
   and pull senders read; the chart gives the workspace service the replicas'
@@ -161,7 +170,10 @@ main service to its address.
   with changes publishes as `COMMIT+dirty.HASH`, a worktree as
   `COMMIT+files.HASH`, where the hash covers the files it publishes. A
   revision that is already the current build, published by the same Interbox
-  version, is not published again.
+  version, is not published again. The exception is a build that parks a
+  pipeline: the workspace service checks that revision again and publishes it
+  when the parked pipelines change, for example after you set a missing
+  variable and restart the service.
 - **Its routes.** Every replica's API forwards the Repository screen, workspace
   actions, the workspace UI, concept maps, unmapped codes and the assistant to
   the workspace service at `INTERBOX_WORKSPACE_SERVICE_URL`. Without that

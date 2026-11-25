@@ -28,10 +28,11 @@ where it sits:
 | where | read |
 |---|---|
 | `aidbox()`: `url` and the `auth` fields | as each send starts, so an unset variable with no default fails that send, and its items are tried again |
-| `mllpSource()`: `port`, `host` | checked when the workspace loads, so an unset variable with no default refuses the load, and read again when the source starts |
-| `webhookSource()`: `path`, `secret` | when the workspace loads, so an unset variable with no default refuses the load; a changed value applies at the next reload. A webhook source takes no `port`: the engine's `INTERBOX_WEBHOOK_PORT` sets the one port every webhook source listens on |
-| `.webhook()`: `url` | when the workspace loads; an unset variable with no default refuses the load |
-| `pullSender()`: `secret` | when the workspace loads; an unset or empty variable refuses the load. It takes no default, so the secret stays out of the workspace code |
+| `mllpSource()`: `port`, `host` | checked when the workspace loads, so an unset variable with no default [parks the pipeline](../ops/workspace.md#parked-pipelines), and read again when the source starts |
+| `webhookSource()`: `path`, `secret` | when the workspace loads, so an unset variable with no default parks the pipeline; a changed value applies at the next reload. A webhook source takes no `port`: the engine's `INTERBOX_WEBHOOK_PORT` sets the one port every webhook source listens on |
+| a source written with `defineSource`: its config | checked when the workspace loads, so an unset variable with no default parks the pipeline, and read again when the source starts |
+| `.webhook()`: `url` | when the workspace loads; an unset variable with no default parks the pipeline |
+| `pullSender()`: `secret` | when the workspace loads; an unset or empty variable parks the pipeline. It takes no default, so the secret stays out of the workspace code |
 | `.webhook()`: `secret` | as each delivery is sent; an unset variable fails that delivery for good |
 | a system declared with `defineSystem` | when the workspace loads; an unset variable with no default refuses the load |
 

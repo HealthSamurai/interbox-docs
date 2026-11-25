@@ -686,7 +686,8 @@ of its own; it reads [`fromPipeline`](../concepts/pipelines.md#bridges).
 An MLLP source's `port` and `host`, and a webhook source's `path` and `secret`,
 may be `env()` references. The engine checks every
 field when it loads the workspace, so an unset variable with no default, or a
-value out of range, refuses the load. An MLLP source reads them again when it
+value out of range, [parks the pipeline](../ops/workspace.md#parked-pipelines).
+An MLLP source reads them again when it
 starts; a webhook source keeps the values read at load until the next reload.
 
 ### `mllpSource`
@@ -731,7 +732,7 @@ starts; a webhook source keeps the values read at load until the next reload.
 | field | default | what it does |
 |---|---|---|
 | `path` | required | the path a request must be sent to, starting with `/` |
-| `secret` | none | when set, a request must carry it in the `x-interbox-secret` header, or as the password of `Authorization: Basic`. An empty string is refused at load |
+| `secret` | none | when set, a request must carry it in the `x-interbox-secret` header, or as the password of `Authorization: Basic`. An empty string parks the pipeline |
 | `maxBytes` | 16 MiB | the largest request body, in bytes; at most 64 MiB |
 
 The engine listens for every webhook source on one port: `3002`, or the port
@@ -744,14 +745,14 @@ paths only. Give one pipeline `path: "/vendor-a/response"` and another
   both sides, so `/vendor-a/response/` and `/vendor-a/response//` reach
   `/vendor-a/response`. The query string
   is not part of the route. A `path` that does not start with `/`, or holds `?`
-  or `#`, is refused at load.
-  So is a `path` a request URL would carry in another form, such as `/a b` or
+  or `#`, [parks the pipeline](../ops/workspace.md#parked-pipelines).
+  So does a `path` a request URL would carry in another form, such as `/a b` or
   `/données`: declare the percent-encoded form the error names (`/a%20b`).
-- **A source without `path` refuses the load,** and so does a source that names
-  a `port`. The error names the pipeline.
+- **A source without `path` parks its pipeline,** and so does a source that
+  names a `port`. The error names the pipeline.
 - **Two sources on one path refuse the load.** The error names both pipelines.
-- **An MLLP source on the webhook port refuses the load,** naming its pipeline
-  and `INTERBOX_WEBHOOK_PORT`. With `INTERBOX_WEBHOOK_PORT=0` the system picks a
+- **An MLLP source on the webhook port parks its pipeline,** and the error names
+  `INTERBOX_WEBHOOK_PORT`. With `INTERBOX_WEBHOOK_PORT=0` the system picks a
   free port for the webhook sources, so an MLLP source on port `0` loads.
 - **The secret and `maxBytes` belong to the route,** so each pipeline keeps its
   own. With `Authorization: Basic`, the user name is ignored;
