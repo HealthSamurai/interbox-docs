@@ -3,7 +3,7 @@
 Interbox 2.0 runs only chain pipelines. It does not read the 1.x tables, so on its
 own a 1.x installation that moves to 2.0 starts with no message history, and the
 Aidbox sender forgets which version of each resource Aidbox already holds. The
-2.0 image ships a one-off script, `scripts/import-1x.ts`, that **moves** both into
+2.0 image ships a one-off script, `scripts/import-1x`, that **moves** both into
 one 2.0 pipeline. You run it once, with every engine stopped, between the 2.0
 migrations and the first start of the 2.0 engine.
 
@@ -172,12 +172,12 @@ until they are ready, the dashboard's counts for that pipeline can be slow.
 ## The script
 
 Run it from `apps/engine` in the 2.0 image (`/app/apps/engine`), with
-`DATABASE_URL` set, after `scripts/migrate.ts`:
+`DATABASE_URL` set, after `scripts/migrate`:
 
 ```sh
 cd /app/apps/engine
-bun scripts/migrate.ts
-bun scripts/import-1x.ts --pipeline hl7-to-aidbox --search-text message
+bun scripts/migrate
+bun scripts/import-1x --pipeline hl7-to-aidbox --search-text message
 ```
 
 | option | what it does |
@@ -375,8 +375,8 @@ names. The examples below use those defaults.
              args:
                - >-
                  cd /app/apps/engine &&
-                 bun scripts/migrate.ts &&
-                 exec bun scripts/import-1x.ts --pipeline <pipeline> --search-text message
+                 bun scripts/migrate &&
+                 exec bun scripts/import-1x --pipeline <pipeline> --search-text message
                  --wait-for-engines 1m --lease-minutes 60
              envFrom:
                - secretRef:
@@ -511,9 +511,9 @@ spec:
           args:
             - >-
               cd /app/apps/engine &&
-              bun scripts/migrate.ts &&
+              bun scripts/migrate &&
               bun /steps/pre-import.js &&
-              bun scripts/import-1x.ts --pipeline <pipeline> --search-text message
+              bun scripts/import-1x --pipeline <pipeline> --search-text message
               --wait-for-engines 1m &&
               bun /steps/post-import.js <pipeline>
           envFrom:
@@ -552,7 +552,7 @@ restore a backup yourself. It costs disk, one more copy of `hl7v2_in` and
 arguments, and keep the wait: run the import with `--wait-for-engines 10m`.
 
 Once the pull request merges, the reconciler scales the engine down and starts
-the Job. `migrate.ts` runs before the wait, which is safe: the 2.0 migrations add
+the Job. `scripts/migrate` runs before the wait, which is safe: the 2.0 migrations add
 tables a 1.x engine does not use, and drop only one that a 1.x engine creates in
 its development mode. Keep `backoffLimit: 0` and `restartPolicy: Never`, so a
 failed run is not retried behind your back, and the long
@@ -602,7 +602,7 @@ reads the service's `DATABASE_URL` and publishes no ports:
 ```sh
 docker compose pull interbox
 docker compose run --rm --no-deps --entrypoint bash interbox -c \
-  "cd /app/apps/engine && bun scripts/migrate.ts && exec bun scripts/import-1x.ts --pipeline hl7-to-aidbox --search-text message"
+  "cd /app/apps/engine && bun scripts/migrate && exec bun scripts/import-1x --pipeline hl7-to-aidbox --search-text message"
 ```
 
 With the workspace checkout on the rewritten pipelines, start 2.0:

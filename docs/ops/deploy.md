@@ -3,7 +3,8 @@
 Interbox ships as one all-in-one image (engine + API + dashboard). It always
 needs a **PostgreSQL** database, which it does **not** bundle. An **Aidbox**
 endpoint is optional: you need one only when your pipelines deliver to it (see
-[System Requirements](sizing.md) for sizing).
+[System Requirements](sizing.md) for sizing). Back the database up:
+[PostgreSQL Backups](postgres.md) says what losing it costs and how.
 
 A deployment runs the image as one or more [replicas](#replicas), which take the
 traffic and run the pipelines, and one [workspace service](#the-workspace-service),
@@ -197,6 +198,35 @@ main service to its address.
   Besides these and the forwarded routes, it serves
   only the routes the assistant's own credential reaches, since the agent's
   command-line tool calls the API inside its pod.
+
+## TLS to PostgreSQL
+
+Put `sslmode=verify-full` in `DATABASE_URL`:
+
+```text
+postgres://interbox:<password>@db.example.com:5432/interbox?sslmode=verify-full
+```
+
+Interbox then encrypts the connection and refuses a server whose certificate
+is not signed by a trusted CA or does not name the host in `DATABASE_URL`.
+Use `sslmode=disable` only for a local database without TLS.
+
+Today Interbox treats `require` as `verify-full` and logs a security warning
+for it. A future release of its database client will stop checking the
+certificate under `require`, so switch to `verify-full` now: a deployment that
+connects with `require` connects with `verify-full` too. Do not use
+`uselibpqcompat=true&sslmode=require`, which the warning also suggests: it
+turns the certificate check off.
+
+When the certificate comes from a private CA (an in-cluster operator's own CA,
+or the Amazon RDS CA bundle), mount the CA's PEM file into the pod and name it
+in `sslrootcert`:
+
+```text
+postgres://interbox:<password>@db.example.com:5432/interbox?sslmode=verify-full&sslrootcert=/etc/interbox/db-ca/ca.pem
+```
+
+Connect by the host name in the certificate, not by an IP address.
 
 ## What's different about deploying Interbox
 

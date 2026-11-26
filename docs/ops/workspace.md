@@ -270,15 +270,18 @@ When a publish fails, the workspace service tries the same revision again after
 30 seconds, and after each further failure waits twice as long, up to 10
 minutes, so a git or package registry outage clears without a new commit. A new
 commit, a branch switch, **Sync now**, **Publish** and **Discard and update**
-each try again at once. It logs the first error in full and a repeat of the same
-error as one short warning. A replica that has no build yet names the failed
+each try again at once. It logs an error once in full, logs nothing while the
+same error repeats for the same revision, and logs one line when a publish
+succeeds again. A replica that has no build yet names the failed
 revision and its error on the Instances page.
 
 Each replica loads a new build when PostgreSQL announces it, on its own poll at
 the same interval, and on `SIGHUP`. It loads the build **first**: it unpacks it,
 runs its workspace migrations and prepares the pipelines' storage, and only then
 swaps its workers. A build that fails to load leaves the replica on the build it
-had, and the Instances page shows the failure. On Linux, the replica starts the
+had, and the Instances page shows the failure. Each workspace migration commits
+on its own, so the migrations before a failed one stay applied, and the next
+load continues from the failed one. On Linux, the replica starts the
 new build's listeners on the same ports beside the old ones, then closes the
 old ones, so new connections are never refused; an open MLLP connection is
 closed once its in-flight message is answered, and the sending system
@@ -327,6 +330,11 @@ second removes the old form once every replica runs the first.
 - changing the shape of the state that sources or steps before the store write
 - removing a pipeline: stop sending to it, then remove it once its units have
   finished
+
+The previous revision has to keep working after each of the new revision's
+workspace migrations, because a failed load keeps the ones that already
+committed. Fix a migration that has run with a new migration: Interbox never
+runs an applied migration again, so an edit to it has no effect.
 
 A store's codec does not change in place: Interbox refuses a build that changes
 a pipeline's codec while units stored with the old codec wait. Give the
@@ -451,6 +459,12 @@ from `@health-samurai/interbox/postgres`, so the action also logs in on
 [Databricks Lakebase](lakebase.md). `signal` aborts at
 the deadline, 15 minutes unless `WORKSPACE_ACTION_TIMEOUT_MS` sets it; an action
 that ignores it keeps running.
+
+`ctx.log(message)` writes an `info` line to the workspace service's log, with the
+action's name in `action` and the run's id in `runId`. A run that throws logs its
+error at `error` with the same two fields, so a search on `runId` finds every line
+of one run. With `LOG_LEVEL` set to `warn` or higher, the service drops the
+`ctx.log` lines.
 
 Actions run in the workspace service, so set the variables they read there.
 It builds `server/actions.ts` and its imports from its checkout when an action

@@ -310,8 +310,17 @@ Every start — an update included — the container:
 The workspace service's container runs the first two steps too, then starts
 the workspace service, which builds the workspace and publishes it.
 
+Each engine migration runs in its own transaction. During a rolling update the
+old pods keep writing, so a migration that cannot get a table lock soon gives
+way: it rolls back, logs `a migration gave way to the database's other sessions
+and will retry`, and tries again. If a migration fails, the container stops
+with an error that names it, the migrations before it stay applied, and the
+next start continues from the failed one. Workspace migrations run the same
+way when a replica loads a build; see
+[How an update reaches the replicas](workspace.md#how-an-update-reaches-the-replicas).
+
 A 2.0 engine that finds rows left in the 1.x tables `interbox.hl7v2_in` or
-`interbox.resource_hash` logs a warning naming `bun scripts/import-1x.ts`: 2.0
+`interbox.resource_hash` logs a warning naming `bun scripts/import-1x`: 2.0
 does not process them. A migration drops the 1.x tables if both are empty when
 it runs. It runs once, so tables that the import empties later stay; see
 [Upgrading from 1.x](upgrade-from-1x.md#once-the-cutover-is-final).

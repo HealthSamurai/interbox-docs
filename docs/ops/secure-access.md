@@ -1078,9 +1078,9 @@ own log, and the two are worth keeping together.
   extensions** before `CREATE EXTENSION` works; otherwise the boot migration
   fails. [PostgreSQL extensions](sizing.md#postgresql-extensions) lists what
   Interbox and Aidbox need, with the Azure `azure.extensions` value to paste.
-- **TLS to Postgres** — put `sslmode=require` (or `verify-full` + the provider CA)
-  in `DATABASE_URL`. See the chart's
-  [PREREQUISITES](https://github.com/HealthSamurai/helm-charts/blob/main/interbox/PREREQUISITES.md).
+- **TLS to Postgres** — put `sslmode=verify-full` in `DATABASE_URL`, and
+  `sslrootcert` when the database's certificate comes from a private CA.
+  See [TLS to PostgreSQL](deploy.md#tls-to-postgresql).
 
 ## See also
 

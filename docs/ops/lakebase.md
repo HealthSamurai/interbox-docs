@@ -27,7 +27,8 @@ platform, so Interbox supports Autoscaling projects only.
 
 Lakebase serves certificates that verify, so use `sslmode=verify-full`. Today
 node-postgres treats `require` the same way but logs a warning for it, and its
-next major version will stop verifying the server under `require`.
+next major version will stop verifying the server under `require`. See
+[TLS to PostgreSQL](deploy.md#tls-to-postgresql).
 
 Interbox refuses to start when a variable is missing, when the host is not an
 `https://` address, and when `DATABASE_URL` still carries a password: under

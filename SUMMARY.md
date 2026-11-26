@@ -2,6 +2,7 @@
 
 * [Introduction](introduction.md)
 * [Getting Started](getting-started.md)
+* [Release Notes](release-notes.md)
 
 ## Concepts
 
@@ -27,6 +28,7 @@
 
 * [System Requirements](ops/sizing.md)
 * [Deployment](ops/deploy.md)
+* [PostgreSQL Backups](ops/postgres.md)
 * [Databricks Lakebase](ops/lakebase.md)
 * [The Workspace](ops/workspace.md)
 * [Operating Pipelines](ops/operating.md)

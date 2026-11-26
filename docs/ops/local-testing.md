@@ -165,7 +165,7 @@ in as `user@interbox.local` / `password`, and you land on the dashboard.
 | ingress-nginx (mapped host ports) | ingress-nginx behind an **internal** LB, or AGIC |
 | self-signed CA issuer | **DNS-01** (public zone) or your **internal CA** / Key Vault |
 | **Dex** + static user | **Entra ID / Okta** (real OIDC app) |
-| in-cluster Postgres pod | **managed Postgres** (private endpoint, `sslmode=require`) |
+| in-cluster Postgres pod | **managed Postgres** (private endpoint, `sslmode=verify-full`) |
 
 Everything else — the chart, the ingress annotations, cert-manager, oauth2-proxy
 — is identical. Tear down with `k3d cluster delete interbox`.
